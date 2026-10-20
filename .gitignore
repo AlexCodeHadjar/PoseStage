@@ -1,0 +1,26 @@
+# Python environments and generated caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local Windows builds and the portable WebView2 runtime
+/build/
+/dist/
+*.spec
+*.zip
+*.exe
+
+# Local settings, logs and credentials
+.env
+.env.*
+!.env.example
+*.log
+poses_cache.json
+state.json
+config.json
+.DS_Store
+Thumbs.db

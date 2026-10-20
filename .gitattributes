@@ -1,0 +1,14 @@
+* text=auto eol=lf
+*.py text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.bat text eol=crlf
+*.png binary
+*.ico binary
+# Preserve vendor checksums and third-party license files byte for byte.
+web/vendor/** -text
+licenses/** -text
