@@ -1004,15 +1004,12 @@ export function install(app) {
     if (!touched.has('gray') && typeof prefs.gray === 'boolean') state.gray = prefs.gray;
     if (!touched.has('grid') && GRID_MODES.includes(prefs.grid)) state.grid = prefs.grid;
     if (!touched.has('on_top') && typeof prefs.on_top === 'boolean') state.on_top = prefs.on_top;
-    if (!touched.has('compact') && typeof prefs.compact === 'boolean') state.compact = prefs.compact;
+    // The compact window is a working mode for one session: every launch starts full-screen.
     windowOnTop = state.on_top || state.compact;
     render();
-    // Re-apply the window state (the window always starts full-screen, not on top).
+    // Re-apply on-top (the window always starts full-screen, not on top).
     if (state.on_top) {
       await setWindowOnTop(true);
-    }
-    if (state.compact) {
-      await setCompact(true);
     }
     render();
   }

@@ -774,6 +774,7 @@ class WindowTests(Base):
     def test_compact_round_trip(self):
         api = app.Api(self.catalog())
         window = api._window = MagicMock()
+        window.native = None  # already on the UI thread
         with patch.object(app.Api, '_place_compact') as place:
             api.set_on_top(False)
             self.assertTrue(api.set_compact(True))
@@ -787,6 +788,34 @@ class WindowTests(Base):
             self.assertIs(window.on_top, False)
             self.assertFalse(api.set_compact(False))
             self.assertEqual(window.toggle_fullscreen.call_count, 2)
+
+    def test_window_changes_run_on_the_ui_thread(self):
+        # Setting TopMost from an API thread deadlocked the window ("Не отвечает").
+        calls = []
+
+        class Native:
+            InvokeRequired = True
+
+            def Invoke(self, action):
+                calls.append('ui')
+                action()
+
+        fake_system = MagicMock(Action=lambda fn: fn)
+        api = app.Api(self.catalog())
+        window = api._window = MagicMock()
+        window.native = Native()
+        with patch.dict(sys.modules, {'System': fake_system}), patch.object(app.Api, '_place_compact') as place:
+            api.set_on_top(True)
+            self.assertEqual(calls, ['ui'])
+            self.assertIs(window.on_top, True)
+            api.set_compact(True)
+            self.assertEqual(calls, ['ui', 'ui'])
+            place.assert_called_once_with(window)
+
+            def broken():
+                raise RuntimeError('boom')
+            with self.assertRaises(RuntimeError):  # errors on the UI thread reach the caller
+                app.Api._on_ui(window, broken)
 
     def test_place_compact_uses_work_area(self):
         window = MagicMock()

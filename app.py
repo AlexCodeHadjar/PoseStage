@@ -376,13 +376,37 @@ class Api:
                 self._window.toggle_fullscreen()
             self._fullscreen = not self._fullscreen
 
+    @staticmethod
+    def _on_ui(window, action):
+        """Runs `action` on the window's UI thread.
+
+        API calls arrive on worker threads. pywebview sets WinForms properties such as TopMost
+        directly from the calling thread; Windows then waits for the UI thread while that thread
+        waits for the GIL held by the caller: the window hangs ("Не отвечает")."""
+        native = getattr(window, "native", None)
+        if native is None or not getattr(native, "InvokeRequired", False):
+            return action()
+        from System import Action
+        outcome = {}
+
+        def run():
+            try:
+                outcome["value"] = action()
+            except Exception as error:  # re-raised on the calling thread
+                outcome["error"] = error
+        native.Invoke(Action(run))
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome.get("value")
+
     def set_on_top(self, on):
         on = bool(on)
         with self._window_lock:
             self._on_top = on
-            if self._window:
+            window = self._window
+            if window:
                 try:
-                    self._window.on_top = on
+                    self._on_ui(window, lambda: setattr(window, "on_top", on))
                 except Exception:
                     logging.exception("Cannot change on-top state")
         return on
@@ -397,7 +421,7 @@ class Api:
             window = self._window
             if window is None:
                 return on
-            try:
+            def apply():
                 if on:
                     if self._fullscreen:
                         window.toggle_fullscreen()
@@ -409,6 +433,9 @@ class Api:
                     if not self._fullscreen:
                         window.toggle_fullscreen()
                         self._fullscreen = True
+            try:
+                self._on_ui(window, apply)
+                logging.info("Window mode: %s", "compact" if on else "fullscreen")
             except Exception:
                 logging.exception("Cannot change compact mode")
         return on
