@@ -1,37 +1,57 @@
-/* Skeleton editor (web/ui/skeleton.js). */
+/* Skeleton editor (web/ui/skeleton.js), skeleton version 2. Colours come from the script as
+   SVG presentation attributes (head white, torso pink, arms red, legs green). */
 .skeleton-layer { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 40; pointer-events: none; }
-.skeleton-layer .bone { stroke-width: 2.5; stroke-linecap: round; opacity: .85; }
-.skeleton-layer .bone.spine { stroke: #f2f2f2; }
-.skeleton-layer .bone.side-a { stroke: #4fd1e8; }
-.skeleton-layer .bone.side-b { stroke: #ffb04a; }
+.skeleton-layer .bone { stroke-width: 3; stroke-linecap: round; opacity: .9; }
+.skeleton-layer .bone.hidden-bone { stroke-dasharray: 5 5; opacity: .5; }
 .skeleton-layer .joint { pointer-events: all; cursor: grab; stroke: #16181b; stroke-width: 2.5; }
 .skeleton-layer .joint:active { cursor: grabbing; }
-.skeleton-layer .joint.spine { fill: #f2f2f2; }
-.skeleton-layer .joint.side-a { fill: #4fd1e8; }
-.skeleton-layer .joint.side-b { fill: #ffb04a; }
 .skeleton-layer .joint:hover { stroke: #fff; stroke-width: 3; }
+.skeleton-layer .joint.selected { stroke: #fff; stroke-width: 3.5; }
+.skeleton-layer .joint.hidden-joint { fill-opacity: .35; stroke-dasharray: 3 3; }
+.skeleton-layer .joint.absent-joint { opacity: .75; stroke-width: 1.5; }
+.skeleton-layer .anchor { fill: #f4f4f4; stroke: #16181b; stroke-width: 1.5; }
 
+/* Top-left: the figure (and its legs, for sitting poses) stays uncovered. */
 .skeleton-panel {
-  position: fixed; left: 50%; bottom: 70px; transform: translateX(-50%); z-index: 41;
+  position: fixed; left: 16px; top: 16px; z-index: 41;
   display: flex; flex-direction: column; align-items: center; gap: 6px;
-  max-width: calc(100vw - 32px); padding: 12px 16px; border-radius: 14px;
+  width: 300px; max-width: calc(100vw - 32px); padding: 12px 14px; border-radius: 14px;
   color: #e6e7e9; font: 13px/1.4 "Segoe UI", sans-serif; text-align: center;
-  background: rgba(22, 24, 27, .72); border: 1px solid rgba(255, 255, 255, .12);
+  background: rgba(22, 24, 27, .78); border: 1px solid rgba(255, 255, 255, .12);
   backdrop-filter: blur(14px);
 }
 .skeleton-title { font-weight: 600; }
-.skeleton-hint { color: #b9bbc0; font-size: 12px; }
-.skeleton-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 4px; }
-.skeleton-buttons button {
+.skeleton-hint { color: #b9bbc0; font-size: 12px; max-width: 560px; }
+.skeleton-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; font-size: 12px; color: #c9cbd0; }
+.skeleton-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.skeleton-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1px solid #16181b; }
+.skeleton-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 2px; }
+.skeleton-buttons button, .skeleton-menu button {
   padding: 6px 14px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, .16);
   color: #e6e7e9; background: rgba(255, 255, 255, .07); font: inherit; cursor: pointer;
 }
-.skeleton-buttons button:hover { background: rgba(255, 255, 255, .14); }
+.skeleton-templates button { padding: 4px 10px; font-size: 12px; }
+.skeleton-buttons button:hover, .skeleton-menu button:hover { background: rgba(255, 255, 255, .14); }
 .skeleton-buttons button.primary { background: rgba(79, 209, 232, .22); border-color: rgba(79, 209, 232, .5); }
-.skeleton-buttons button:disabled { opacity: .4; cursor: default; }
+.skeleton-buttons button:disabled, .skeleton-menu button:disabled { opacity: .4; cursor: default; }
+
+.skeleton-menu {
+  position: fixed; z-index: 43; display: flex; flex-direction: column; gap: 4px; padding: 6px;
+  border-radius: 10px; background: rgba(22, 24, 27, .92); border: 1px solid rgba(255, 255, 255, .14);
+  font: 13px "Segoe UI", sans-serif;
+}
+.skeleton-menu button { text-align: left; border-color: transparent; background: transparent; }
+.skeleton-menu button.on { background: rgba(79, 209, 232, .22); }
+
 .skeleton-toast {
-  position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%); z-index: 42;
+  position: fixed; left: 50%; bottom: 210px; transform: translateX(-50%); z-index: 42;
   padding: 8px 14px; border-radius: 10px; color: #e6e7e9; font: 13px "Segoe UI", sans-serif;
-  background: rgba(22, 24, 27, .8); pointer-events: none;
+  background: rgba(22, 24, 27, .85); pointer-events: none;
 }
 body.skeleton-editing .artist-tools, body.skeleton-editing .nav-counter { opacity: .2; }
+
+body.windowed .skeleton-panel { top: 40px; }
+@media (max-height: 560px), (max-width: 520px) {
+  .skeleton-panel { width: 240px; padding: 8px 10px; gap: 4px; }
+  .skeleton-hint { display: none; }
+}

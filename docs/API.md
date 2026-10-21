@@ -25,7 +25,10 @@ type Pose = {
   area: number;         // площадь силуэта (альфа > 8), px исходника
   stature: number;      // оценка роста стоя, px исходника: reference·√area коллекции
   scale_adjust: number; // ручная поправка размера 0.5…2 (1 — без поправки)
-  joints: {nose: [x, y], shoulders: [[x, y], [x, y]], elbows: …, wrists: …, hips: …} | null;
+  // Скелет версии 2 (docs/SKELETON.md): 16 точек head, chest, navel, pelvis и
+  // {shoulder, elbow, wrist, hip, knee, foot}_{l, r} — стороны самой фигуры.
+  joints: {version: 2, view: "front"|"three_quarter"|"side"|"back",
+           points: {[id]: {xy?: [x, y], state: "visible"|"hidden"|"absent", support?: bool}}} | null;
   joints_source: "user"|"bundled"|null;  // скелет для оживления (px исходника)
 }
 ```
@@ -59,8 +62,9 @@ type Pose = {
 или фигура выходит за края экрана (`placement.limited`).
 
 - `set_joints(file: string, joints | null) -> Pose` — исправленный скелет позы (оживление); `null` —
-  вернуть найденный автоматически (`web/scene/pose_joints.json`). Хранится в `joint_overrides.json`
-  по коллекции; неверный формат — `ValueError`.
+  вернуть найденный автоматически (`web/scene/pose_joints.json`). Принимает версии 1 и 2, хранит
+  версию 2 в `joint_overrides.json` по коллекции. Ось head → chest → navel → pelvis обязательна;
+  неверный формат — `ValueError`.
 - `set_pose_scale(file: string, factor: number) -> Pose` — ручная поправка 0.5…2, `1` удаляет её.
   Хранится в `scale_overrides.json` по коллекции. Иное значение — `ValueError`.
 

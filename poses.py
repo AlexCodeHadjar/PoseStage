@@ -205,27 +205,102 @@ def opaque(pose: dict) -> bool:
     return pose["area"] >= .98 * pose["w"] * pose["h"]
 
 
-JOINT_PAIRS = ("shoulders", "elbows", "wrists", "hips")  # [left, right] each; plus "nose"
+# --- Pose skeleton, version 2 (docs/SKELETON.md) -------------------------------------------------
+# 16 points from the head down: head → chest → shoulders → elbows → wrists, chest → navel →
+# pelvis → hips → knees → feet (ankles). `_l` / `_r` are the figure's own sides. Each point is
+# visible, hidden (behind the body: placed roughly, never moves on its own) or absent (out of
+# the picture); "support" pins a point to the podium (else decided from the lower contour).
+JOINT_AXIS = ("head", "chest", "navel", "pelvis")
+JOINT_LIMBS = tuple(f"{name}_{side}" for name in ("shoulder", "elbow", "wrist", "hip", "knee", "foot")
+                    for side in "lr")
+JOINT_IDS = JOINT_AXIS + JOINT_LIMBS
+JOINT_STATES = ("visible", "hidden", "absent")
+JOINT_VIEWS = ("front", "three_quarter", "side", "back")
+_V1_PAIRS = ("shoulders", "elbows", "wrists", "hips")
+
+
+def joints_from_v1(old: dict) -> dict:
+    """Version 1 (nose, shoulders, elbows, wrists, hips as [left, right]) → version 2.
+    Pelvis, chest and navel are derived; knees and feet are placed under the hips as hidden."""
+    def mid(a, b):
+        return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]
+
+    def lerp(a, b, t):
+        return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+    shoulders, hips = old["shoulders"], old["hips"]
+    pelvis = mid(*hips)
+    chest = lerp(mid(*shoulders), pelvis, .15)
+    torso = math.hypot(chest[0] - pelvis[0], chest[1] - pelvis[1])
+    points = {"head": {"xy": list(old["nose"]), "state": "visible"},
+              "chest": {"xy": chest, "state": "visible"},
+              "navel": {"xy": lerp(chest, pelvis, .55), "state": "visible"},
+              "pelvis": {"xy": pelvis, "state": "visible"}}
+    for i, side in enumerate("lr"):
+        for name, pair in (("shoulder", "shoulders"), ("elbow", "elbows"), ("wrist", "wrists"), ("hip", "hips")):
+            points[f"{name}_{side}"] = {"xy": list(old[pair][i]), "state": "visible"}
+        hip = old["hips"][i]
+        points[f"knee_{side}"] = {"xy": [hip[0], hip[1] + torso * 1.05], "state": "hidden"}
+        points[f"foot_{side}"] = {"xy": [hip[0], hip[1] + torso * 2.1], "state": "hidden"}
+    return {"version": 2, "view": "front", "points": points}
+
+
+def _upgrade(joints):
+    """Any accepted skeleton as version 2 (None when it is neither format)."""
+    if not isinstance(joints, dict):
+        return None
+    if joints.get("version") == 2:
+        return joints
+    if "nose" in joints and all(isinstance(joints.get(name), list) for name in _V1_PAIRS):
+        try:
+            return joints_from_v1(joints)
+        except (TypeError, IndexError, KeyError):
+            return None
+    return None
 
 
 def valid_joints(joints, w=None, h=None) -> bool:
-    """{"nose": [x, y], "shoulders"/"elbows"/"wrists"/"hips": [[x, y], [x, y]]} in source px."""
-    if not isinstance(joints, dict):
+    """A version 2 skeleton (or a version 1 one that converts) with coordinates in source px."""
+    joints = _upgrade(joints)
+    if joints is None or joints.get("view", "front") not in JOINT_VIEWS:
+        return False
+    points = joints.get("points")
+    if not isinstance(points, dict) or not set(points) <= set(JOINT_IDS):
         return False
     limit = 4 * max(w or 1, h or 1, 1024)
 
-    def point(value):
+    def xy(value):
         return (isinstance(value, list) and len(value) == 2
                 and all(type(n) in (int, float) and math.isfinite(n) and -limit <= n <= limit for n in value))
-    return point(joints.get("nose")) and all(
-        isinstance(joints.get(name), list) and len(joints[name]) == 2 and all(map(point, joints[name]))
-        for name in JOINT_PAIRS)
+    for name in JOINT_IDS:
+        point = points.get(name)
+        if point is None:
+            if name in JOINT_AXIS:
+                return False
+            continue
+        if not isinstance(point, dict) or point.get("state", "visible") not in JOINT_STATES:
+            return False
+        absent = point.get("state") == "absent"
+        if "support" in point and (type(point["support"]) is not bool or absent):
+            return False
+        if (name in JOINT_AXIS and absent) or (not absent and not xy(point.get("xy"))):
+            return False
+    return True
 
 
 def clean_joints(joints) -> dict:
-    """Only the known points, rounded to 0.1 px."""
-    pair = lambda value: [round(float(value[0]), 1), round(float(value[1]), 1)]
-    return {"nose": pair(joints["nose"]), **{name: [pair(v) for v in joints[name]] for name in JOINT_PAIRS}}
+    """Canonical version 2: known points only, coordinates rounded to 0.1 px, missing limbs absent."""
+    joints = _upgrade(joints)
+    points = {}
+    for name in JOINT_IDS:
+        point = joints["points"].get(name) or {"state": "absent"}
+        state = point.get("state", "visible")
+        clean = {"state": state}
+        if state != "absent":
+            clean["xy"] = [round(float(point["xy"][0]), 1), round(float(point["xy"][1]), 1)]
+        if "support" in point and state != "absent":
+            clean["support"] = point["support"]
+        points[name] = clean
+    return {"version": 2, "view": joints.get("view", "front"), "points": points}
 
 
 @lru_cache(maxsize=1)
@@ -240,8 +315,13 @@ def bundled_joints() -> dict:
 def with_joints(pose: dict, user: dict) -> dict:
     """Skeleton for the idle animation: the user's correction > bundled detection (top-level
     files only, like support modes) > none (the frontend then estimates one from the box)."""
+    bundled = bundled_joints().get(pose["file"].casefold()) if "/" not in pose["file"] else None
     if valid_joints(user.get(pose["file"]), pose["w"], pose["h"]):
         joints, source = clean_joints(user[pose["file"]]), "user"
+        if user[pose["file"]].get("version") != 2 and bundled:
+            # A version 1 correction had no legs: take the detected knees and feet.
+            for key in ("knee_l", "knee_r", "foot_l", "foot_r"):
+                joints["points"][key] = dict(bundled["points"][key])
     elif "/" not in pose["file"] and pose["file"].casefold() in bundled_joints():
         joints, source = bundled_joints()[pose["file"].casefold()], "bundled"
     else:
@@ -788,7 +868,7 @@ class PoseCatalog:
                 index = next(i for i, pose in enumerate(self.items) if pose["file"] == relative)
                 current = self.items[index]
                 if joints is not None and not valid_joints(joints, current["w"], current["h"]):
-                    raise ValueError("Skeleton must be {nose, shoulders, elbows, wrists, hips} in pixels")
+                    raise ValueError("Skeleton must be version 2 (docs/SKELETON.md) with coordinates in pixels")
                 set_joint_override(cid, relative, joints)
                 pose = with_joints(current, read_joint_overrides(cid))
                 self.items = self.items[:index] + [pose] + self.items[index + 1:]

@@ -139,8 +139,6 @@ def order(items, prefs, library):
     return chosen or list(range(len(items)))
 
 
-# --- Composition --------------------------------------------------------------------------------
-
 # --- Idle animation: a port of web/scene/idle.js ------------------------------------------------
 
 IDLE_LOOP = 6.0  # seconds; every motion's period divides it
@@ -160,54 +158,123 @@ def rotate(x, y, cx, cy, angle):
     return cx + c * (x - cx) - s * (y - cy), cy + s * (x - cx) + c * (y - cy)
 
 
-def estimate_joints(pose):
-    """A skeleton from the box alone, for poses without detected or corrected joints."""
-    x1, y1, x2, y2 = pose["box"]
-    h, cx = y2 - y1, (x1 + x2) / 2
-    nose, shoulder, hip = {"kneel": (.09, .26, .62), "ground": (.12, .32, .75)}.get(
-        (pose.get("support") or {}).get("mode"), (.07, .2, .5))
+JOINT_AXIS = ("head", "chest", "navel", "pelvis")
+JOINT_IDS = JOINT_AXIS + tuple(f"{n}_{s}" for n in ("shoulder", "elbow", "wrist", "hip", "knee", "foot") for s in "lr")
+# Template skeletons in box coordinates (u, v), the figure's left first (web/scene/idle.js).
+_FRONT = {"head": (.5, .07), "chest": (.5, .24), "navel": (.5, .4), "pelvis": (.5, .5),
+          "shoulder": ((.64, .2), (.36, .2)), "elbow": ((.7, .35), (.3, .35)), "wrist": ((.72, .48), (.28, .48)),
+          "hip": ((.57, .52), (.43, .52)), "knee": ((.57, .74), (.43, .74)), "foot": ((.57, .96), (.43, .96))}
+_FAR_SIDE = ("shoulder_r", "elbow_r", "wrist_r", "hip_r", "knee_r", "foot_r")
+TEMPLATES = {
+    "front": _FRONT,
+    "back": {k: (v[1], v[0]) if isinstance(v[0], tuple) else v for k, v in _FRONT.items()},
+    "side": {"head": (.5, .07), "chest": (.53, .24), "navel": (.51, .4), "pelvis": (.48, .5),
+             "shoulder": ((.5, .2), (.47, .2)), "elbow": ((.5, .36), (.47, .36)), "wrist": ((.5, .5), (.47, .5)),
+             "hip": ((.49, .52), (.47, .52)), "knee": ((.5, .74), (.47, .74)), "foot": ((.5, .96), (.47, .96)),
+             "hidden": _FAR_SIDE},
+    "sit": {"head": (.5, .1), "chest": (.5, .3), "navel": (.5, .45), "pelvis": (.5, .6),
+            "shoulder": ((.6, .27), (.4, .27)), "elbow": ((.68, .42), (.32, .42)), "wrist": ((.72, .6), (.28, .6)),
+            "hip": ((.56, .62), (.44, .62)), "knee": ((.75, .75), (.25, .75)), "foot": ((.85, .95), (.15, .95)),
+            "support": ("pelvis",)},
+    "lie": {"head": (.08, .5), "chest": (.25, .5), "navel": (.4, .52), "pelvis": (.52, .55),
+            "shoulder": ((.23, .42), (.23, .58)), "elbow": ((.35, .4), (.35, .6)), "wrist": ((.45, .4), (.45, .6)),
+            "hip": ((.53, .5), (.53, .6)), "knee": ((.72, .5), (.72, .6)), "foot": ((.92, .55), (.92, .62)),
+            "hidden": _FAR_SIDE, "support": ("pelvis",)},
+}
+TEMPLATE_VIEW = {"front": "front", "side": "side", "back": "back", "sit": "front", "lie": "side"}
 
-    def side(y, half):
-        return [[cx + half, y1 + y * h], [cx - half, y1 + y * h]]
-    shoulders = side(shoulder, .11 * h)
-    return {"nose": [cx, y1 + nose * h], "shoulders": shoulders, "elbows": shoulders, "wrists": shoulders,
-            "hips": side(hip, .07 * h)}
+
+def template_joints(pose, kind):
+    """A skeleton of `kind` ("front", "side", "back", "sit", "lie") fitted to the pose box."""
+    template = TEMPLATES.get(kind, TEMPLATES["front"])
+    x1, y1, x2, y2 = pose["box"]
+
+    def at(uv):
+        return [round((x1 + uv[0] * (x2 - x1)) * 10) / 10, round((y1 + uv[1] * (y2 - y1)) * 10) / 10]
+    points = {name: {"xy": at(template[name]), "state": "visible"} for name in JOINT_AXIS}
+    for name in ("shoulder", "elbow", "wrist", "hip", "knee", "foot"):
+        for i, side in enumerate("lr"):
+            key = f"{name}_{side}"
+            points[key] = {"xy": at(template[name][i]),
+                           "state": "hidden" if key in template.get("hidden", ()) else "visible"}
+    for key in template.get("support", ()):
+        points[key]["support"] = True
+    return {"version": 2, "view": TEMPLATE_VIEW.get(kind, "front"), "points": points}
+
+
+def estimate_joints(pose):
+    """The skeleton to use when a pose has none: a template from the support mode / box."""
+    x1, y1, x2, y2 = pose["box"]
+    if (x2 - x1) / max(1, y2 - y1) > 1.4:
+        return template_joints(pose, "lie")
+    mode = (pose.get("support") or {}).get("mode")
+    return template_joints(pose, "sit" if mode in ("kneel", "ground") else "front")
 
 
 class IdleRig:
-    """Displacement field (source px, y down) for breathing, weight shift, head and free hands;
-    supports stay pinned. Same math as createRig() in web/scene/idle.js."""
+    """Displacement field (source px, y down) from the skeleton version 2: breathing, weight
+    shift, head and free hands; supports stay pinned. Same math as createRig() in idle.js."""
 
     def __init__(self, pose):
-        j = pose.get("joints") or estimate_joints(pose)
+        joints = pose.get("joints")
+        joints = joints if isinstance(joints, dict) and joints.get("version") == 2 else estimate_joints(pose)
+        points = joints["points"]
 
-        def mid(pair):
-            return (pair[0][0] + pair[1][0]) / 2, (pair[0][1] + pair[1][1]) / 2
-        self.shoulders, self.hips, self.nose = mid(j["shoulders"]), mid(j["hips"]), tuple(j["nose"])
-        ax, ay = self.shoulders[0] - self.hips[0], self.shoulders[1] - self.hips[1]
-        self.torso = max(1.0, math.hypot(ax, ay))
-        self.axis = (ax / self.torso, ay / self.torso)
-        self.neck = (self.shoulders[0] + (self.nose[0] - self.shoulders[0]) * .35,
-                     self.shoulders[1] + (self.nose[1] - self.shoulders[1]) * .35)
-        head = math.hypot(self.nose[0] - self.shoulders[0], self.nose[1] - self.shoulders[1])
-        self.head_radius = max(head * 1.25, self.torso * .45)
+        def xy(key):
+            return tuple(points[key]["xy"]) if points.get(key, {}).get("xy") else None
+
+        def visible(key):
+            return points.get(key, {}).get("state") == "visible" and xy(key) is not None
+        head, chest, pelvis = xy("head"), xy("chest"), xy("pelvis")
+        self.head, self.pelvis = head, pelvis
+        self.torso = max(1.0, math.hypot(chest[0] - pelvis[0], chest[1] - pelvis[1]))
+        self.axis = ((chest[0] - pelvis[0]) / self.torso, (chest[1] - pelvis[1]) / self.torso)
+        lying = abs(self.axis[1]) < .5
+        support_mode = (pose.get("support") or {}).get("mode")
+        sitting = support_mode in ("kneel", "ground")
+        view = joints.get("view", "front")
+        self.sway = 0.0 if lying else IDLE_SWAY * (.6 if view == "side" else 1) * (.8 if sitting else 1)
+        lift = (0.0, -1.0) if lying else self.axis
+        if view == "side" and not lying:
+            length = max(1.0, math.hypot(head[0] - pelvis[0], head[1] - pelvis[1]))
+            line = ((head[0] - pelvis[0]) / length, (head[1] - pelvis[1]) / length)
+            offset = (chest[0] - pelvis[0], chest[1] - pelvis[1])
+            along = offset[0] * line[0] + offset[1] * line[1]
+            perp = (offset[0] - line[0] * along, offset[1] - line[1] * along)
+            size = math.hypot(*perp)
+            forward = (perp[0] / size, perp[1] / size) if size > 1e-3 else (-self.axis[1], self.axis[0])
+            raw = (self.axis[0] + forward[0] * .5, self.axis[1] + forward[1] * .5)
+            norm = math.hypot(*raw)
+            lift = (raw[0] / norm, raw[1] / norm)  # as strong as in front view, tilted forward
+        self.lift = lift
+        self.neck = (chest[0] + (head[0] - chest[0]) * .35, chest[1] + (head[1] - chest[1]) * .35)
+        self.head_radius = max(math.hypot(head[0] - chest[0], head[1] - chest[1]) * 1.25, self.torso * .45)
         self.neck_along = self.along(*self.neck)
-        width = max(1.0, math.hypot(j["shoulders"][0][0] - j["shoulders"][1][0],
-                                    j["shoulders"][0][1] - j["shoulders"][1][1]))
+        if visible("shoulder_l") and visible("shoulder_r"):
+            (ax, ay), (bx, by) = xy("shoulder_l"), xy("shoulder_r")
+            width = max(1.0, math.hypot(ax - bx, ay - by))
+        else:
+            width = self.torso * .6
         self.hands = []
-        for elbow, wrist in zip(j["elbows"], j["wrists"]):
+        for side in "lr":
+            if not (visible(f"elbow_{side}") and visible(f"wrist_{side}")) or points[f"wrist_{side}"].get("support") is True:
+                continue
+            elbow, wrist = xy(f"elbow_{side}"), xy(f"wrist_{side}")
             reach = math.hypot(wrist[0] - elbow[0], wrist[1] - elbow[1])
-            from_axis = abs((wrist[0] - self.hips[0]) * self.axis[1] - (wrist[1] - self.hips[1]) * self.axis[0])
+            from_axis = abs((wrist[0] - pelvis[0]) * self.axis[1] - (wrist[1] - pelvis[1]) * self.axis[0])
             if reach > width * .25 and from_axis > width * .9:
-                self.hands.append((tuple(elbow), tuple(wrist)))
-        self.contacts = support_data(pose)[0]
+                self.hands.append((elbow, wrist))
         self.pin = .06 * (pose["box"][3] - pose["box"][1])
+        released = [xy(k) for k in JOINT_IDS if points.get(k, {}).get("support") is False and xy(k)]
+        self.pins = [c for c in support_data(pose)[0]
+                     if all(math.hypot(c[0] - rx, c[1] - ry) > self.pin * 1.5 for rx, ry in released)]
+        self.pins += [list(xy(k)) for k in JOINT_IDS if points.get(k, {}).get("support") is True and xy(k)]
 
     def along(self, x, y):
-        return ((x - self.hips[0]) * self.axis[0] + (y - self.hips[1]) * self.axis[1]) / self.torso
+        return ((x - self.pelvis[0]) * self.axis[0] + (y - self.pelvis[1]) * self.axis[1]) / self.torso
 
     def lock_at(self, x, y):
-        nearest = min(math.hypot(x - cx, y - cy) for cx, cy in self.contacts)
+        nearest = min((math.hypot(x - cx, y - cy) for cx, cy in self.pins), default=math.inf)
         return 1 - smooth(self.pin * .5, self.pin * 1.6, nearest)
 
     def displace(self, x, y, t, lock=None):
@@ -215,16 +282,17 @@ class IdleRig:
         if lock >= 1:
             return 0.0, 0.0
         w = 2 * math.pi / IDLE_LOOP
-        breath, sway = math.sin(2 * w * t), math.sin(w * t)
+        breath, swing = math.sin(2 * w * t), math.sin(w * t)
         nod = math.sin(w * t + 1.3) + .35 * math.sin(3 * w * t + .4)
         s = self.along(x, y)
         nx, ny = x, y
-        weight = smooth(-.12, .25, s)
-        rx, ry = rotate(nx, ny, *self.hips, IDLE_SWAY * sway)
-        nx, ny = nx + (rx - nx) * weight, ny + (ry - ny) * weight
-        lift = IDLE_LIFT * self.torso * (breath * .5 + .5) * smooth(.15, .85, s)
-        nx, ny = nx + self.axis[0] * lift, ny + self.axis[1] * lift
-        distance = math.hypot(x - self.nose[0], y - self.nose[1])
+        if self.sway:
+            weight = smooth(-.12, .25, s)
+            rx, ry = rotate(nx, ny, *self.pelvis, self.sway * swing)
+            nx, ny = nx + (rx - nx) * weight, ny + (ry - ny) * weight
+        rise = IDLE_LIFT * self.torso * (breath * .5 + .5) * smooth(.15, .85, s)
+        nx, ny = nx + self.lift[0] * rise, ny + self.lift[1] * rise
+        distance = math.hypot(x - self.head[0], y - self.head[1])
         head = smooth(-.05, .35, (s - self.neck_along) / .5) * (
             1 - smooth(self.head_radius * .8, self.head_radius * 1.4, distance))
         if head > 0:

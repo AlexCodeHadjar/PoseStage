@@ -8,7 +8,7 @@ import { FIXTURE_POSES } from './fixtures.js';
 import { frameCamera } from '../../web/scene/stage.js';
 import { groundMapping, fitPlacement, bodyScale, STATURE_SHARE, SUPPORT_RADIUS, setSizing, FILE_FIGURE_SHARE } from '../../web/scene/placement.js';
 import { Figure } from '../../web/scene/figure.js';
-import { createRig, estimateJoints, IDLE_LOOP } from '../../web/scene/idle.js';
+import { createRig, estimateJoints, templateJoints, IDLE_LOOP, JOINT_IDS } from '../../web/scene/idle.js';
 import { TextureCache } from '../../web/scene/textures.js';
 import { stepTarget, normalizeOrder, edgeTarget } from '../../web/core/navigation.js';
 import { ViewState } from '../../web/core/view.js';
@@ -75,32 +75,66 @@ test('file sizing (default): one scale for every picture, support centred, no li
 
 // --- Idle animation ------------------------------------------------------------
 
-// desktop.py IdleRig values for FIXTURE_POSES[1] (estimated skeleton): [x, y, t, dx, dy].
-const PYTHON_IDLE = [
-  [512.0, 160.0, 0.7, 7.623912194, -7.046659252],
-  [512.0, 160.0, 2.9, -1.244344972, -2.917759503],
-  [512.0, 380.0, 0.7, 1.926889374, -3.671811688],
-  [512.0, 380.0, 2.9, 0.301020104, -1.463435963],
-  [436.4, 336.0, 0.7, 2.577241112, -7.204474511],
-  [436.4, 336.0, 2.9, 0.401556717, -2.602251325],
-];
+// desktop.py IdleRig values for FIXTURE_POSES[1]: [x, y, t, dx, dy], front = estimated
+// (template) skeleton, side = templateJoints(pose, 'side').
+const PYTHON_IDLE = {
+  front: [
+    [512.0, 160.0, 0.7, 8.610277719, -6.041531923],
+    [512.0, 160.0, 2.9, -2.148770816, -2.509225198],
+    [512.0, 380.0, 0.7, 1.926889374, -4.216512848],
+    [512.0, 380.0, 2.9, 0.301020104, -1.679754181],
+    [436.4, 336.0, 0.7, 2.577241112, -7.238134463],
+    [436.4, 336.0, 2.9, 0.401556717, -2.615618767],
+  ],
+  side: [
+    [512.0, 160.0, 0.7, 9.645747127, -5.392094288],
+    [512.0, 160.0, 2.9, -1.212802473, -2.021913067],
+    [512.0, 380.0, 0.7, 3.221255597, -3.642547617],
+    [512.0, 380.0, 2.9, 1.000799066, -1.459009792],
+    [436.4, 336.0, 0.7, 4.495234472, -5.886071997],
+    [436.4, 336.0, 2.9, 1.412810574, -2.191088953],
+  ],
+};
 
-test('idle rig matches desktop.py, loops seamlessly and pins the supports', () => {
-  const pose = FIXTURE_POSES[1];
-  const rig = createRig(pose);
-  for (const [x, y, t, dx, dy] of PYTHON_IDLE) {
-    const [jx, jy] = rig.displace(x, y, t);
-    near(jx, dx, 1e-6, `dx at ${x},${y},${t}`);
-    near(jy, dy, 1e-6, `dy at ${x},${y},${t}`);
-    const [lx, ly] = rig.displace(x, y, t + IDLE_LOOP);
-    near(lx, jx, 1e-9, 'loop x');
-    near(ly, jy, 1e-9, 'loop y');
+test('idle rig (skeleton v2) matches desktop.py, loops seamlessly and pins the supports', () => {
+  const base = FIXTURE_POSES[1];
+  for (const [kind, rows] of Object.entries(PYTHON_IDLE)) {
+    const pose = { ...base, joints: kind === 'side' ? templateJoints(base, 'side') : null };
+    const rig = createRig(pose);
+    for (const [x, y, t, dx, dy] of rows) {
+      const [jx, jy] = rig.displace(x, y, t);
+      near(jx, dx, 1e-6, `${kind} dx at ${x},${y},${t}`);
+      near(jy, dy, 1e-6, `${kind} dy at ${x},${y},${t}`);
+      const [lx, ly] = rig.displace(x, y, t + IDLE_LOOP);
+      near(lx, jx, 1e-9, 'loop x');
+      near(ly, jy, 1e-9, 'loop y');
+    }
   }
-  for (const [x, y] of pose.support.profile.filter((point) => point[1] >= pose.box[1] + 0.93 * (pose.box[3] - pose.box[1]))) {
+  const rig = createRig(base);
+  for (const [x, y] of base.support.profile.filter((point) => point[1] >= base.box[1] + 0.93 * (base.box[3] - base.box[1]))) {
     deepEqual(rig.displace(x, y, 1.3), [0, 0], `support ${x},${y} pinned`);
   }
-  const joints = estimateJoints(pose);
-  assert(joints.nose[1] < joints.shoulders[0][1] && joints.shoulders[0][1] < joints.hips[0][1], 'estimated order');
+});
+
+test('skeleton v2 templates: 16 points, sides, hidden far limbs, support flags', () => {
+  const pose = FIXTURE_POSES[1];
+  equal(JOINT_IDS.length, 16);
+  const front = templateJoints(pose, 'front');
+  const back = templateJoints(pose, 'back');
+  assert(front.points.shoulder_l.xy[0] > front.points.shoulder_r.xy[0], 'front: figure left on the picture right');
+  assert(back.points.shoulder_l.xy[0] < back.points.shoulder_r.xy[0], 'back: sides swap');
+  equal(templateJoints(pose, 'side').points.wrist_r.state, 'hidden');
+  equal(templateJoints(pose, 'sit').points.pelvis.support, true);
+  equal(estimateJoints(pose).view, 'front');
+  // A hidden or supported wrist never swings.
+  const joints = templateJoints(pose, 'front');
+  const free = createRig({ ...pose, joints });
+  joints.points.wrist_l = { ...joints.points.wrist_l, state: 'hidden' };
+  joints.points.wrist_r = { ...joints.points.wrist_r, support: true };
+  const still = createRig({ ...pose, joints });
+  const wrist = joints.points.wrist_r.xy;
+  deepEqual(still.displace(wrist[0], wrist[1], 0.9), [0, 0], 'supported wrist pinned');
+  assert(Math.hypot(...free.displace(wrist[0], wrist[1], 0.9)) >= 0, 'free rig runs');
 });
 
 test('Figure.animate bends the drawing and restores it', () => {

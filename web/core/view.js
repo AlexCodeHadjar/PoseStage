@@ -15,6 +15,10 @@ export class ViewState {
   }
 
   resize(width, height) {
+    // A hidden window reports 0×0: keep the last real size (0 would turn the offset into NaN).
+    if (!(width > 0 && height > 0)) {
+      return;
+    }
     // Keep the same relative region in view.
     this.x *= width / this.width;
     this.y *= height / this.height;
@@ -65,8 +69,8 @@ export class ViewState {
   clamp() {
     const maxX = this.width - this.width / this.zoom;
     const maxY = this.height - this.height / this.zoom;
-    this.x = Math.min(maxX, Math.max(0, this.x));
-    this.y = Math.min(maxY, Math.max(0, this.y));
+    this.x = Number.isFinite(this.x) ? Math.min(maxX, Math.max(0, this.x)) : 0;
+    this.y = Number.isFinite(this.y) ? Math.min(maxY, Math.max(0, this.y)) : 0;
   }
 
   apply(camera) {
