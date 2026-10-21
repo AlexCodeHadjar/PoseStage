@@ -1,53 +1,70 @@
 // PoseStage frontend tests. Serve the project root over HTTP and open
 // tests/web/placement.test.html (e.g. python -m http.server; no Node needed).
-// ?record=1 prints the measure() values instead of testing.
 import * as THREE from 'three';
 import { test, run, assert, equal, deepEqual, near, waitFor } from './runner.js';
-import { measure, makeCamera } from './measure.js';
-import { RECORDED } from './expected.js';
+import { makeCamera, VIEWPORTS, CAMERA_SHIFTS } from './measure.js';
 import { FIXTURE_POSES } from './fixtures.js';
 
 import { frameCamera } from '../../web/scene/stage.js';
-import { groundMapping, fitPlacement } from '../../web/scene/placement.js';
+import { groundMapping, fitPlacement, bodyScale, STATURE_SHARE, SUPPORT_RADIUS } from '../../web/scene/placement.js';
 import { Figure } from '../../web/scene/figure.js';
 import { TextureCache } from '../../web/scene/textures.js';
 import { stepTarget, normalizeOrder, edgeTarget } from '../../web/core/navigation.js';
 import { ViewState } from '../../web/core/view.js';
 import { normalizeCombo, keyLabel, createOverlays, createShortcuts } from '../../web/core/input.js';
 
-import * as baselineStage from './baseline/scene/stage.js';
-import * as baselinePlacement from './baseline/scene/placement.js';
-import * as baselineFigure from './baseline/scene/figure.js';
-
-const current = { frameCamera, groundMapping, fitPlacement, Figure };
-const baseline = {
-  frameCamera: baselineStage.frameCamera,
-  groundMapping: baselinePlacement.groundMapping,
-  fitPlacement: baselinePlacement.fitPlacement,
-  Figure: baselineFigure.Figure,
-};
-
 // --- Placement math ------------------------------------------------------
 
-test('placement matches values recorded from the original code', () => {
-  const rows = new Map(measure(current).map((row) => [row.key, row]));
-  for (const [key, scale, x, y, radius, shadowSum] of RECORDED) {
-    const row = rows.get(key);
-    assert(row, `missing ${key}`);
-    near(row.scale, scale, 1e-9, `${key} scale`);
-    near(row.x, x, 1e-9, `${key} x`);
-    near(row.y, y, 1e-9, `${key} y`);
-    near(row.maxContactRadius, radius, 1e-9, `${key} maxContactRadius`);
-    near(row.shadow[0], shadowSum, 1e-8, `${key} shadow sum`);
+// Fixture poses as the backend now sends them: the same body drawn at different sizes.
+const BODY_POSES = FIXTURE_POSES.map((pose, i) => ({ ...pose, stature: (pose.box[3] - pose.box[1]) * (0.8 + 0.1 * i) }));
+
+test('one body size: every pose that fits gets stature × scale = share of the viewport', () => {
+  let free = 0;
+  for (const [width, height] of VIEWPORTS) {
+    const mapping = groundMapping(makeCamera(frameCamera, width, height).camera);
+    for (const pose of BODY_POSES) {
+      const placement = fitPlacement(pose, mapping);
+      near(placement.desired, (STATURE_SHARE * height) / pose.stature, 1e-12, `${pose.file} desired`);
+      assert(placement.scale <= placement.desired * (1 + 1e-12), `${pose.file} never larger than the body size`);
+      if (!placement.limited) {
+        free++;
+        near(placement.scale * pose.stature, STATURE_SHARE * height, 1e-9, `${width}x${height} ${pose.file} body`);
+      }
+    }
   }
+  // Fixtures include deliberately oversized bodies and a narrow 480×720 window.
+  assert(free >= VIEWPORTS.length * 2, `fixtures that fit unshrunk (${free})`);
 });
 
-test('placement and every shadow vertex are bit-identical to the frozen original modules', () => {
-  const now = measure(current, { exact: true });
-  const before = measure(baseline, { exact: true });
-  equal(now.length, before.length, 'row count');
-  for (let i = 0; i < now.length; i++) {
-    deepEqual(now[i], before[i], now[i].key);
+test('scale_adjust multiplies the size; no stature falls back to the box height', () => {
+  const mapping = groundMapping(makeCamera(frameCamera, 1920, 1080).camera);
+  const pose = BODY_POSES[3];
+  near(bodyScale({ ...pose, scale_adjust: 1.1 }, mapping), bodyScale(pose, mapping) * 1.1, 1e-12, 'adjust');
+  const bare = { ...FIXTURE_POSES[3] };
+  near(bodyScale(bare, mapping), (STATURE_SHARE * 1080) / (bare.box[3] - bare.box[1]), 1e-12, 'fallback');
+  const smaller = fitPlacement({ ...pose, scale_adjust: 0.8 }, mapping);
+  near(smaller.scale, fitPlacement(pose, mapping).scale * 0.8, 1e-9, 'smaller pose keeps the ratio');
+});
+
+test('limits: contacts on the podium, figure inside the screen margins', () => {
+  for (const [width, height] of VIEWPORTS) {
+    for (const shift of CAMERA_SHIFTS) {
+      const mapping = groundMapping(makeCamera(frameCamera, width, height, shift).camera);
+      for (const base of BODY_POSES) {
+        for (const adjust of [1, 2]) {
+          const pose = { ...base, scale_adjust: adjust };
+          const p = fitPlacement(pose, mapping);
+          const [x1, y1, x2, y2] = pose.box;
+          const key = `${width}x${height}/${shift}/${pose.file}×${adjust}`;
+          assert(p.scale > 0, `${key} scale`);
+          assert(p.maxContactRadius <= SUPPORT_RADIUS + 1e-9, `${key} contacts on the podium`);
+          assert(mapping.centerX + (x1 - p.cx) * p.scale >= -width * 0.42 - 1e-6, `${key} left edge`);
+          assert(mapping.centerX + (x2 - p.cx) * p.scale <= width * 0.42 + 1e-6, `${key} right edge`);
+          assert(mapping.centerY + (p.cy - y1) * p.scale <= height * 0.43 + 1e-6, `${key} top edge`);
+          if (adjust === 2) assert(p.limited, `${key} doubled size must be limited`);
+        }
+      }
+    }
   }
 });
 
@@ -589,9 +606,4 @@ test('integration: no errors were reported', () => {
   deepEqual(harness.errors, []);
 });
 
-if (new URLSearchParams(location.search).has('record')) {
-  document.querySelector('#log').textContent = JSON.stringify(measure(current));
-  document.querySelector('#summary').textContent = 'RECORDED';
-} else {
-  run();
-}
+run();

@@ -133,6 +133,9 @@ class Handler(BaseHTTPRequestHandler):
             file = source = catalog.resolve(relative)
             if file is not None and kind == "thumbs":
                 file = poses.thumbnail(source)
+        elif kind == "backgrounds":
+            # Strict `<sha256-16>.(png|jpg)` name, only inside DATA_DIR/backgrounds.
+            file = poses.background_file(relative)
         elif kind == "web":
             # Reject Windows drive/UNC/device paths before resolve() can touch them.
             if (not relative or any(part == ".." for part in relative.split("/"))
@@ -242,6 +245,10 @@ class Api:
     def set_support_mode(self, file, mode):
         return self._catalog.set_mode(file, mode)
 
+    def set_pose_scale(self, file, factor):
+        """User's size correction of one pose (0.5…2, 1 removes it); returns the updated Pose."""
+        return self._catalog.set_scale(file, factor)
+
     # --- Collections ---
 
     def get_collections(self):
@@ -325,6 +332,38 @@ class Api:
 
     def save_view_prefs(self, prefs):
         return poses.save_view_prefs(prefs)
+
+    # --- Background images (copies in %APPDATA%\PoseStage\backgrounds) ---
+
+    def _pick_background(self) -> Path | None:
+        """Native image dialog; None without a window (tests, dev server) or on cancel."""
+        if not self._window:
+            return None
+        import webview
+        chosen = self._window.create_file_dialog(
+            webview.FileDialog.OPEN, file_types=("Изображения (*.png;*.jpg;*.jpeg;*.webp)",))
+        return Path(chosen[0]) if chosen else None
+
+    def choose_background(self):
+        """Dialog → validated copy, selected as the background. None on cancel / without a window."""
+        if not self._select_lock.acquire(blocking=False):
+            return None
+        try:
+            source = self._pick_background()
+            if not source:
+                return None
+            entry = poses.import_background(source, self._catalog.prefix)
+            poses.save_view_prefs({"background": {"mode": "image", "id": entry["id"]}})
+            return entry
+        finally:
+            self._select_lock.release()
+
+    def list_backgrounds(self):
+        return poses.list_backgrounds(self._catalog.prefix)
+
+    def remove_background(self, background_id):
+        poses.remove_background(background_id)
+        return self.list_backgrounds()
 
     # --- Window (harmless no-ops without a native window) ---
 

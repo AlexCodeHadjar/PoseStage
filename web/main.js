@@ -1,7 +1,7 @@
 // PoseStage frontend core: renderer + loop, pose transitions, input, and the App
 // controller handed to UI modules (contract: docs/API.md, section 2).
 import * as THREE from 'three';
-import { createStage, frameCamera } from './scene/stage.js';
+import { createStage, frameCamera, orbitCamera } from './scene/stage.js';
 import { createPost } from './scene/post.js';
 import { Figure } from './scene/figure.js';
 import { TextureCache } from './scene/textures.js';
@@ -54,7 +54,8 @@ let active = document.hasFocus();
 let frameId = 0;
 let stillFrameId = 0;
 let lastFrame = 0;
-let mouse = { x: 0, y: 0, time: -10000 };
+let mouse = { x: 0, y: 0, inside: false }; // last pointer position (−1…1), kept while inside the window
+let frameMs = 0; // smoothed CPU time of renderFrame (diagnostics)
 let frameCount = 0;
 let sampleStart = 0;
 let fps = 60;
@@ -68,6 +69,48 @@ const frameCallbacks = new Set();
 const queuedReports = [];
 
 const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+
+// --- Parallax ------------------------------------------------------------
+// The camera orbits the podium following the LAST pointer position (no snap-back while the
+// pointer rests); it eases back to the centre only when the pointer leaves the window or the
+// window loses focus. yaw/pitch: radians at the window edge; soft ≈ the original ±4° sway.
+const PARALLAX_MODES = {
+  off: { yaw: 0, pitch: 0 },
+  soft: { yaw: THREE.MathUtils.degToRad(4), pitch: THREE.MathUtils.degToRad(0.35) },
+  strong: { yaw: THREE.MathUtils.degToRad(9.5), pitch: THREE.MathUtils.degToRad(3.5) },
+};
+const PARALLAX_SMOOTH_TIME = 0.32; // s
+let parallaxMode = 'soft';
+const sway = { yaw: 0, pitch: 0, yawSpeed: 0, pitchSpeed: 0 };
+const backdropFit = { yaw: -1, pitch: -1 }; // angles the background plane currently covers
+
+// The background picture must cover every view the camera can take: the current mode's
+// extremes and wherever the camera still is while easing from a stronger mode. Growing is
+// immediate; shrinking (a visible re-crop) waits until the camera has settled.
+function fitBackdrop(force = false) {
+  if (!studio || !framing) return;
+  const amplitude = PARALLAX_MODES[parallaxMode];
+  const yaw = Math.max(amplitude.yaw, Math.abs(sway.yaw)) + 0.004;
+  const pitch = Math.max(amplitude.pitch, Math.abs(sway.pitch)) + 0.002;
+  const grow = yaw > backdropFit.yaw || pitch > backdropFit.pitch;
+  const settled = Math.abs(sway.yawSpeed) + Math.abs(sway.pitchSpeed) < 1e-4;
+  const shrink = settled && (yaw < backdropFit.yaw - 0.002 || pitch < backdropFit.pitch - 0.002);
+  if (force || grow || shrink) {
+    backdropFit.yaw = yaw;
+    backdropFit.pitch = pitch;
+    studio.backdrop.fit(camera, framing, yaw, pitch);
+  }
+}
+
+// Critically damped spring towards `target` (no overshoot); returns [value, velocity].
+function smoothDamp(value, velocity, target, smoothTime, dt) {
+  const omega = 2 / smoothTime;
+  const x = omega * dt;
+  const decay = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+  const change = value - target;
+  const temp = (velocity + omega * change) * dt;
+  return [target + (change + temp) * decay, (velocity - omega * temp) * decay];
+}
 // Cubic ease-in-out.
 const ease = (x) => {
   x = clamp(x);
@@ -156,6 +199,7 @@ function resize() {
   post.composer.setPixelRatio(studioRatio);
   post.composer.setSize(w, h);
   framing = frameCamera(camera, w, h);
+  fitBackdrop(true);
   figureCamera.left = -w / 2;
   figureCamera.right = w / 2;
   figureCamera.top = h / 2;
@@ -503,19 +547,18 @@ function renderFrame(now) {
   const dt = lastFrame ? clamp((now - lastFrame) / 1000, 0, 0.06) : 1 / 60;
   lastFrame = now;
 
-  // Gentle parallax from the pointer plus "breathing"; damped while zoomed so
-  // the on-screen motion keeps its size.
-  const pointerAlive = now - mouse.time < 450;
-  const x = pointerAlive ? mouse.x : 0;
-  const y = pointerAlive ? mouse.y : 0;
+  // Parallax orbit from the pointer plus a slow "breath" (also in mode off); damped while
+  // zoomed so the on-screen motion keeps its size.
+  const amplitude = PARALLAX_MODES[parallaxMode];
   const damp = 1 / view.zoom;
-  const breath = Math.sin(now / 1450) * 0.002;
-  const wantedX = framing.base.x + framing.distance * (x * Math.sin(THREE.MathUtils.degToRad(4)) + breath) * damp;
-  const wantedY = framing.base.y + framing.distance * (y * 0.006 + Math.cos(now / 1600) * 0.001) * damp;
-  const smooth = 1 - Math.exp(-dt * 3);
-  camera.position.x = THREE.MathUtils.lerp(camera.position.x, wantedX, smooth);
-  camera.position.y = THREE.MathUtils.lerp(camera.position.y, wantedY, smooth);
-  camera.lookAt(framing.target);
+  const x = mouse.inside ? mouse.x : 0;
+  const y = mouse.inside ? mouse.y : 0;
+  [sway.yaw, sway.yawSpeed] = smoothDamp(sway.yaw, sway.yawSpeed, x * amplitude.yaw * damp, PARALLAX_SMOOTH_TIME, dt);
+  [sway.pitch, sway.pitchSpeed] = smoothDamp(sway.pitch, sway.pitchSpeed, y * amplitude.pitch * damp, PARALLAX_SMOOTH_TIME, dt);
+  const breathYaw = Math.sin(now / 1450) * 0.002 * damp;
+  const breathPitch = Math.cos(now / 1600) * 0.001 * damp;
+  if (studio.backdrop.active) fitBackdrop();
+  orbitCamera(camera, framing, sway.yaw + breathYaw, sway.pitch + breathPitch);
   camera.updateMatrixWorld();
   syncViewCamera();
 
@@ -567,7 +610,9 @@ function draw(now) {
   if (!active || document.hidden) {
     return;
   }
+  const frameStart = performance.now();
   renderFrame(now);
+  frameMs += (performance.now() - frameStart - frameMs) * 0.05;
   frameCount++;
   if (!sampleStart) {
     sampleStart = now;
@@ -619,6 +664,51 @@ function pause() {
   lastFrame = 0;
 }
 
+// --- Background: the studio or a picture behind the podium ----------------
+let background = { mode: 'studio', url: null, blur: 0, dim: 0 };
+let backgroundToken = 0;
+const backgroundImages = new Map(); // url -> Promise<HTMLImageElement> (a few recent ones)
+
+function loadBackgroundImage(url) {
+  let promise = backgroundImages.get(url);
+  if (!promise) {
+    promise = new Promise((resolve, reject) => {
+      const image = new Image();
+      image.decoding = 'async';
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error(`Не удалось загрузить фон: ${url}`));
+      image.src = url;
+    });
+    promise.catch(() => backgroundImages.delete(url));
+    backgroundImages.set(url, promise);
+    for (const key of backgroundImages.keys()) {
+      if (backgroundImages.size <= 3) break;
+      if (key !== url && key !== background.url) backgroundImages.delete(key);
+    }
+  }
+  return promise;
+}
+
+// {mode: "studio"|"image", url, blur: 0…24, dim: 0…0.85}; resolves with the applied state.
+// A later call wins over an earlier one whose image is still loading. Rejects if the image
+// cannot be loaded (the previous background stays).
+async function setBackground(options = {}) {
+  const token = ++backgroundToken;
+  const blur = clamp(Number(options.blur) || 0, 0, 24);
+  const dim = clamp(Number(options.dim) || 0, 0, 0.85);
+  const url = options.mode === 'image' && typeof options.url === 'string' && options.url ? options.url : null;
+  const image = url ? await loadBackgroundImage(url) : null;
+  if (token !== backgroundToken || !studio) {
+    return { ...background };
+  }
+  studio.backdrop.configure(image, blur, dim);
+  post.setBackdrop(!!image);
+  background = { mode: image ? 'image' : 'studio', url, blur, dim };
+  renderer.shadowMap.needsUpdate = true;
+  invalidate();
+  return { ...background };
+}
+
 // --- App controller (docs/API.md §2) --------------------------------------
 const app = {
   get api() {
@@ -660,6 +750,14 @@ const app = {
       const rect = figure?.layoutRect();
       return rect ? view.toScreen(rect) : null;
     },
+    // Parallax mode "off" | "soft" | "strong"; returns the mode in effect.
+    setParallax(mode) {
+      if (Object.hasOwn(PARALLAX_MODES, mode)) parallaxMode = mode;
+      return parallaxMode;
+    },
+    parallax: () => parallaxMode,
+    setBackground: (options) => setBackground(options),
+    background: () => ({ ...background }),
     onFrame(callback) {
       if (typeof callback !== 'function') {
         throw new TypeError('onFrame(callback)');
@@ -826,10 +924,24 @@ window.addEventListener('keydown', (event) => {
 });
 window.addEventListener('pointermove', (event) => {
   chrome.wake();
-  mouse = { x: (event.clientX / innerWidth) * 2 - 1, y: 1 - (event.clientY / innerHeight) * 2, time: performance.now() };
+  mouse = { x: clamp((event.clientX / innerWidth) * 2 - 1, -1, 1), y: clamp(1 - (event.clientY / innerHeight) * 2, -1, 1), inside: true };
+});
+// Parallax eases back to the centre when the pointer leaves the window or focus is lost.
+document.addEventListener('mouseout', (event) => {
+  if (!event.relatedTarget) mouse.inside = false;
+});
+window.addEventListener('blur', () => {
+  mouse.inside = false;
 });
 window.addEventListener('pointerdown', chrome.wake);
 window.addEventListener('resize', resize);
+// Moving to a monitor with another Windows scale changes devicePixelRatio without a resize.
+(function watchPixelRatio() {
+  matchMedia(`(resolution: ${devicePixelRatio}dppx)`).addEventListener('change', () => {
+    resize();
+    watchPixelRatio();
+  }, { once: true });
+})();
 window.addEventListener('focus', resume);
 window.addEventListener('blur', pause);
 document.addEventListener('visibilitychange', () => {
@@ -868,11 +980,18 @@ Object.defineProperty(window, '__poseStage', {
     pixelScale: current?.pixelScale,
     supportMode: current?.pose.support?.mode,
     maxContactRadius: current?.placement?.maxContactRadius,
+    stature: current?.pose.stature ?? null,
+    scaleAdjust: current?.pose.scale_adjust ?? 1,
+    sizeLimited: current?.placement?.limited ?? false,
     figures: overlay ? overlay.children.length : 0,
     supportCenter: current?.placement ? [current.placement.mapping.centerX, current.placement.mapping.centerY] : null,
     podiumTop: 0.4,
     canvas: [canvas.width, canvas.height],
     zoom: view.zoom,
+    parallax: parallaxMode,
+    sway: [sway.yaw, sway.pitch],
+    frameMs,
+    background: background.mode,
     viewOffset: [view.x, view.y],
     order: order ? order.length : null,
     overlays: overlays.top(),

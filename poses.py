@@ -30,6 +30,8 @@ THUMB_MAX_BYTES = 256 * 1024 * 1024  # LRU cap for DATA_DIR/thumbs
 THUMB_GRACE, THUMB_TOUCH = 600, 300  # never prune thumbnails used within 10 min; refresh mtime every 5
 MAX_TAGS, MAX_TAG_LENGTH = 16, 32
 MAX_SEARCH_LENGTH = 100  # view_prefs filter.search
+SCALE_LIMITS = (.5, 2.0)  # user's per-pose size correction ([ and ] keys)
+DEFAULT_REFERENCE = 2.6  # stature / sqrt(silhouette area) when a collection has no standing poses
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 DATA_DIR = Path(os.environ.get("APPDATA", str(Path.home() / "AppData/Roaming"))) / "PoseStage"
 _write_lock = threading.Lock()
@@ -62,9 +64,10 @@ def write_json(path: Path, data):
 def valid_entry(value):
     if not isinstance(value, dict):
         return False
-    w, h, box = value.get("w"), value.get("h"), value.get("box")
+    w, h, box, area = value.get("w"), value.get("h"), value.get("box"), value.get("area")
     if not (type(w) is int and type(h) is int and isinstance(box, list)
-            and len(box) == 4 and all(type(n) is int for n in box)):
+            and len(box) == 4 and all(type(n) is int for n in box)
+            and type(area) is int and 0 < area <= w * h):
         return False
     support = value.get("support", {})
     if not (0 <= box[0] < box[2] <= w and 0 <= box[1] < box[3] <= h
@@ -179,8 +182,34 @@ def make_pose(prefix: str, relative: str, geometry: dict, overrides: dict, bundl
         mode, source = auto_mode(geometry["box"]), "auto"
     path = url_path(relative)
     return {"url": f"{prefix}/poses/{path}", "thumb": f"{prefix}/thumbs/{path}", "file": relative,
-            "box": list(geometry["box"]), "w": geometry["w"], "h": geometry["h"],
+            "box": list(geometry["box"]), "w": geometry["w"], "h": geometry["h"], "area": geometry["area"],
             "support": {**geometry["support"], "mode": mode, "cut": CUTS[mode]}, "support_source": source}
+
+
+def body_reference(poses: list[dict]) -> float:
+    """Collection's stature per sqrt(silhouette area): the median over standing, transparent poses.
+
+    The silhouette area of one body barely depends on the pose (a raised arm adds height, not area),
+    so stature ≈ reference·√area gives every pose the same body size, whatever its bounding box."""
+    ratios = sorted((p["box"][3] - p["box"][1]) / math.sqrt(p["area"]) for p in poses
+                    if p["support"]["mode"] == "feet" and not opaque(p))
+    if not ratios:
+        return DEFAULT_REFERENCE
+    middle = len(ratios) // 2
+    return ratios[middle] if len(ratios) % 2 else (ratios[middle - 1] + ratios[middle]) / 2
+
+
+def opaque(pose: dict) -> bool:
+    """A photo or other picture without transparency: no cut-out silhouette to measure."""
+    return pose["area"] >= .98 * pose["w"] * pose["h"]
+
+
+def with_body(pose: dict, reference: float, scales: dict) -> dict:
+    """Adds the estimated standing height (source px) and the user's size correction.
+    Opaque pictures have no body to measure: their box height stands in for it."""
+    x1, y1, x2, y2 = pose["box"]
+    stature = y2 - y1 if opaque(pose) else reference * math.sqrt(pose["area"])
+    return {**pose, "stature": round(stature, 3), "scale_adjust": scales.get(pose["file"], 1.0)}
 
 
 # --- Collections: config.json {"collections": [{id, name, folder}], "active": id} -----------------
@@ -324,6 +353,27 @@ def set_override(cid: str, relative: str, mode: str):
     update_section("support_overrides.json", cid, change)
 
 
+def valid_scale(value) -> bool:
+    return type(value) in (int, float) and math.isfinite(value) and SCALE_LIMITS[0] <= value <= SCALE_LIMITS[1]
+
+
+def read_scales(cid: str | None) -> dict[str, float]:
+    return {k: float(v) for k, v in read_section("scale_overrides.json", cid).items()
+            if isinstance(k, str) and valid_scale(v)}
+
+
+def set_scale(cid: str, relative: str, factor: float):
+    """Stores the user's size correction; 1.0 removes it."""
+    def change(section):
+        clean = {k: v for k, v in section.items() if isinstance(k, str) and valid_scale(v)}
+        clean.pop(relative, None)
+        if abs(factor - 1) > 1e-6:
+            clean[relative] = round(factor, 4)
+        section.clear()
+        section.update(clean)
+    update_section("scale_overrides.json", cid, change)
+
+
 def normalize_tags(tags) -> list[str]:
     if not isinstance(tags, list):
         raise ValueError("tags must be a list of strings")
@@ -394,7 +444,8 @@ def write_state(cid: str, relative: str, index: int):
                                              "collections": entries})
 
 
-VIEW_PREFS = {"flip": bool, "gray": bool, "on_top": bool, "compact": bool, "grid": ("off", "thirds", "proportions")}
+VIEW_PREFS = {"flip": bool, "gray": bool, "on_top": bool, "compact": bool, "grid": ("off", "thirds", "proportions"),
+              "parallax": ("off", "soft", "strong")}
 FILTER_PREFS = {"mode": ("all", *MODES), "favorites": bool}
 
 
@@ -417,6 +468,9 @@ def clean_view_prefs(prefs) -> dict:
             filter_["search"] = raw["search"][:MAX_SEARCH_LENGTH]
         if filter_:
             result["filter"] = filter_
+    background = clean_background_prefs(prefs.get("background"))
+    if background:
+        result["background"] = background
     return result
 
 
@@ -429,8 +483,9 @@ def save_view_prefs(prefs) -> dict:
     update = clean_view_prefs(prefs)
     with _store_lock:
         current = read_view_prefs()
-        if "filter" in update:
-            update["filter"] = {**current.get("filter", {}), **update["filter"]}
+        for key in ("filter", "background"):
+            if key in update:
+                update[key] = {**current.get(key, {}), **update[key]}
         current.update(update)
         write_json(DATA_DIR / "view_prefs.json", current)
         return current
@@ -517,6 +572,7 @@ class PoseCatalog:
         self.recursive = recursive  # False only for the session-only EXE-folder fallback
         self.items: list[dict] = []
         self.allowed: dict[str, Path] = {}
+        self.reference = DEFAULT_REFERENCE  # body_reference() of the current items
         self.ready = threading.Event()
         self.lock = threading.RLock()
         self._scan_lock = threading.Lock()
@@ -535,9 +591,10 @@ class PoseCatalog:
                 recursive = True if folder else self.recursive
                 root = folder or self.folder
                 root = root.resolve() if root else None
-                items, allowed = self._build(root, recursive)
+                items, allowed, reference = self._build(root, recursive)
                 with self.lock:
                     self.folder, self.items, self.allowed, self.recursive = root, items, allowed, recursive
+                    self.reference = reference
             except Exception:
                 logging.exception("Pose scan failed")
             finally:
@@ -567,6 +624,7 @@ class PoseCatalog:
                     if box is None:
                         raise ValueError("Empty alpha silhouette")
                     value = {"box": list(box), "w": rgba.width, "h": rgba.height,
+                             "area": mask.histogram()[255],
                              "support": support_profile(mask, box, auto_mode(box))}
                 return key, value, relative, path
             except Exception:
@@ -597,7 +655,8 @@ class PoseCatalog:
             allowed[relative] = path
         if entries != cached:
             write_json(DATA_DIR / "poses_cache.json", entries)
-        return items, allowed
+        reference, scales = body_reference(items), read_scales(cid)
+        return [with_body(pose, reference, scales) for pose in items], allowed, reference
 
     def get(self) -> list[dict]:
         self.ready.wait()
@@ -641,5 +700,182 @@ class PoseCatalog:
                 set_override(cid, relative, mode)
                 index = next(i for i, pose in enumerate(self.items) if pose["file"] == relative)
                 pose = make_pose(self.prefix, relative, self.items[index], read_overrides(cid), bundled_modes())
+                # The collection's reference stays as scanned, so other poses keep their size.
+                pose = with_body(pose, self.reference, read_scales(cid))
                 self.items = self.items[:index] + [pose] + self.items[index + 1:]
                 return pose
+
+    def set_scale(self, relative, factor) -> dict:
+        if not valid_scale(factor):
+            raise ValueError(f"Size correction must be within {SCALE_LIMITS}: {factor!r}")
+        self.ready.wait()
+        with self._scan_lock:
+            with self.lock:
+                cid = self.require(relative, wait=False)
+                set_scale(cid, relative, float(factor))
+                index = next(i for i, pose in enumerate(self.items) if pose["file"] == relative)
+                pose = with_body(self.items[index], self.reference, read_scales(cid))
+                self.items = self.items[:index] + [pose] + self.items[index + 1:]
+                return pose
+
+
+# --- Background images (view pref "background") --------------------------------------------------
+# Copies of user-chosen pictures live in DATA_DIR/backgrounds/<sha256-16>.(png|jpg); originals are
+# only read. The id is the first 16 hex digits of the SHA-256 of the original file's bytes.
+
+BACKGROUND_ID_RE = re.compile(r"[0-9a-f]{16}")
+BACKGROUND_FILE_RE = re.compile(r"([0-9a-f]{16})\.(png|jpg)")
+BACKGROUND_MAX_SIDE = 4096
+BACKGROUND_MAX_BYTES = 256 * 1024 * 1024  # refuse absurd source files before decoding
+BACKGROUND_MODES = ("studio", "image")
+BACKGROUND_LIMITS = {"blur": (0.0, 24.0), "dim": (0.0, 0.85)}
+
+
+def clean_background_prefs(raw) -> dict:
+    """{mode, id, blur, dim} with valid values only; numbers are clamped into their range."""
+    if not isinstance(raw, dict):
+        return {}
+    result = {}
+    if raw.get("mode") in BACKGROUND_MODES:
+        result["mode"] = raw["mode"]
+    if "id" in raw and (raw["id"] is None or (isinstance(raw["id"], str) and BACKGROUND_ID_RE.fullmatch(raw["id"]))):
+        result["id"] = raw["id"]
+    for key, (low, high) in BACKGROUND_LIMITS.items():
+        value = raw.get(key)
+        if type(value) in (int, float) and math.isfinite(value):
+            result[key] = round(min(high, max(low, float(value))), 3)
+    return result
+
+
+def background_dir() -> Path:
+    return DATA_DIR / "backgrounds"
+
+
+def background_file(name: str) -> Path | None:
+    """`<id>.<ext>` inside DATA_DIR/backgrounds (strict name, no traversal, real file), else None."""
+    if not isinstance(name, str) or not BACKGROUND_FILE_RE.fullmatch(name):
+        return None
+    root = background_dir()
+    try:
+        root = root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    path = root / name
+    return path if inside(path, root) and path.is_file() else None
+
+
+def _background_entry(prefix: str, path: Path) -> dict | None:
+    match = BACKGROUND_FILE_RE.fullmatch(path.name)
+    if not match:
+        return None
+    try:
+        with Image.open(path) as im:
+            w, h = im.size
+    except Exception:
+        logging.exception("Unreadable stored background: %s", path)
+        return None
+    return {"id": match.group(1), "url": f"{prefix}/backgrounds/{path.name}", "w": w, "h": h}
+
+
+def list_backgrounds(prefix: str) -> list[dict]:
+    """Stored backgrounds, oldest first."""
+    try:
+        with os.scandir(background_dir()) as entries:
+            files = [(entry.stat().st_mtime_ns, entry.name, Path(entry.path)) for entry in entries
+                     if entry.is_file() and BACKGROUND_FILE_RE.fullmatch(entry.name)]
+    except OSError:
+        return []
+    result = []
+    for _, _, path in sorted(files):
+        entry = _background_entry(prefix, path)
+        if entry and all(e["id"] != entry["id"] for e in result):
+            result.append(entry)
+    return result
+
+
+def _to_srgb(image, mode: str):
+    """`image` as `mode` ("RGB"/"RGBA") in sRGB. An embedded ICC profile (Display P3, Adobe RGB,
+    CMYK, ...) is converted to sRGB like a browser would; without one, or if the profile is
+    unusable, it is a plain conversion (values taken as sRGB)."""
+    icc = image.info.get("icc_profile")
+    if icc:
+        try:
+            import io
+            from PIL import ImageCms
+            alpha = image.convert("RGBA").getchannel("A") if mode == "RGBA" else None
+            base = image if image.mode in ("RGB", "CMYK", "L") else image.convert("RGB")
+            result = ImageCms.profileToProfile(
+                base, ImageCms.ImageCmsProfile(io.BytesIO(icc)), ImageCms.createProfile("sRGB"),
+                renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC, outputMode="RGB")
+            if alpha is not None:
+                result.putalpha(alpha)
+            return result
+        except Exception:
+            logging.warning("Ignoring an unusable ICC profile in a background image", exc_info=True)
+    return image.convert(mode)
+
+
+def import_background(source: Path, prefix: str) -> dict:
+    """Validates `source` (full decode, EXIF orientation), stores a copy (long side ≤ 4096 px; alpha →
+    PNG, otherwise JPEG q92) and returns {id, url, w, h}. The source file is never modified.
+    Unreadable or unsupported images raise ValueError."""
+    try:
+        source = Path(source)
+        if source.suffix.lower() not in EXTENSIONS:
+            raise ValueError("unsupported extension")
+        if source.stat().st_size > BACKGROUND_MAX_BYTES:
+            raise ValueError("file too large")
+        data = source.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()[:16]
+        for ext in ("png", "jpg"):
+            existing = background_file(f"{digest}.{ext}")
+            if existing:
+                os.utime(existing)  # moves to the end of the list
+                return _background_entry(prefix, existing)
+        import io
+        with Image.open(io.BytesIO(data)) as im:
+            if im.format not in FORMATS:
+                raise ValueError(f"format {im.format}")
+            im.load()
+            alpha = "A" in im.getbands() or "transparency" in im.info
+            image = _to_srgb(ImageOps.exif_transpose(im), "RGBA" if alpha else "RGB")
+        if alpha and image.getchannel("A").getextrema()[0] == 255:
+            image, alpha = image.convert("RGB"), False  # an opaque PNG is stored as JPEG
+        image.thumbnail((BACKGROUND_MAX_SIDE, BACKGROUND_MAX_SIDE), Image.Resampling.LANCZOS)
+    except ValueError as error:
+        raise ValueError(f"Не удалось открыть изображение: {error}") from None
+    except (OSError, Image.DecompressionBombError, SyntaxError) as error:
+        raise ValueError(f"Не удалось открыть изображение: {error}") from None
+    ext = "png" if alpha else "jpg"
+    folder = background_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    target = folder / f"{digest}.{ext}"
+    tmp = folder / f"{digest}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        if alpha:
+            image.save(tmp, "PNG")
+        else:
+            image.save(tmp, "JPEG", quality=92, subsampling=0, optimize=True)
+        tmp.replace(target)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return {"id": digest, "url": f"{prefix}/backgrounds/{target.name}", "w": image.width, "h": image.height}
+
+
+def remove_background(background_id) -> bool:
+    """Deletes a stored copy; a selected background falls back to the studio. False if unknown."""
+    if not isinstance(background_id, str) or not BACKGROUND_ID_RE.fullmatch(background_id):
+        return False
+    removed = False
+    for ext in ("png", "jpg"):
+        path = background_file(f"{background_id}.{ext}")
+        if path:
+            try:
+                path.unlink()
+                removed = True
+            except OSError:
+                logging.exception("Cannot remove background: %s", path)
+    with _store_lock:
+        if read_view_prefs().get("background", {}).get("id") == background_id:
+            save_view_prefs({"background": {"mode": "studio", "id": None}})
+    return removed

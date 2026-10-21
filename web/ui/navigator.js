@@ -669,12 +669,21 @@ export function install(app) {
   // --- Support mode --------------------------------------------------------
   async function setSupport(file, mode) {
     const gen = posesGen;
-    const pose = await call('set_support_mode', 'Не удалось изменить опору', file, mode);
+    // A size change still waiting for its debounced save must reach the backend first,
+    // otherwise this reply would carry the old scale_adjust.
+    if (pendingScale.has(file)) {
+      clearTimeout(scaleTimer);
+      saveScales();
+    }
+    await savingScales;
+    let pose = await call('set_support_mode', 'Не удалось изменить опору', file, mode);
     // The collection was switched/reloaded meanwhile: this result belongs to the old list.
     if (gen !== posesGen) return;
     if (!pose || typeof pose !== 'object' || !Array.isArray(pose.box)) return;
     const index = app.poses().findIndex((item) => item.file === file);
     if (index < 0) return;
+    // [ / ] pressed while this request was in flight: keep the size shown on screen.
+    if (pendingScale.has(file)) pose = { ...pose, scale_adjust: pendingScale.get(file) };
     app.updatePose(index, pose);
     poses[index] = pose;
     const name = MODE_NAMES[pose.support?.mode] || pose.support?.mode || '?';
@@ -684,6 +693,52 @@ export function install(app) {
     if (cells[index] && cellsFor === poses) badgeFor(cells[index], pose);
     renderDetails();
     if (filter.mode !== 'all') applyFilter();
+  }
+
+  // --- Size correction ([ / ]) ----------------------------------------------
+  // Applied at once (optimistic), saved debounced: holding a key must stay smooth.
+  const pendingScale = new Map(); // file -> factor waiting to be saved
+  let scaleTimer = 0;
+  let savingScales = Promise.resolve(); // the save currently in flight
+
+  function nudgeScale(index, ratio) {
+    const pose = poses[index];
+    if (!pose) return;
+    const before = pose.scale_adjust > 0 ? pose.scale_adjust : 1;
+    const next = ratio === null ? 1 : Math.min(2, Math.max(0.5, Math.round(before * ratio * 1000) / 1000));
+    if (next === before) {
+      toast(ratio === null ? 'Размер позы: 100 %' : `Размер позы: предел ${Math.round(next * 100)} %`);
+      return;
+    }
+    const updated = { ...pose, scale_adjust: next };
+    poses[index] = updated;
+    app.updatePose(index, updated);
+    const limited = index === app.index() && window.__poseStage?.sizeLimited;
+    toast(`Размер позы: ${Math.round(next * 100)} %${limited ? ' — больше не помещается на подиум' : ''}`);
+    pendingScale.set(pose.file, next);
+    clearTimeout(scaleTimer);
+    scaleTimer = setTimeout(saveScales, 350);
+  }
+
+  function saveScales() {
+    savingScales = savingScales.then(sendScales, sendScales);
+    return savingScales;
+  }
+
+  async function sendScales() {
+    const gen = posesGen;
+    const batch = [...pendingScale];
+    pendingScale.clear();
+    for (const [file, factor] of batch) {
+      const pose = await call('set_pose_scale', 'Не удалось сохранить размер позы', file, factor);
+      if (gen !== posesGen || pendingScale.has(file)) continue; // superseded meanwhile
+      if (!pose || typeof pose !== 'object' || !Array.isArray(pose.box)) continue;
+      const index = poses.findIndex((item) => item.file === file);
+      if (index >= 0 && poses[index].scale_adjust === pose.scale_adjust) {
+        poses[index] = pose;
+        app.updatePose(index, pose);
+      }
+    }
   }
 
   // Target of S / 1–3 / 0: the gallery selection while it is open, else the pose on screen.
@@ -916,6 +971,16 @@ export function install(app) {
       const pose = poses[targetIndex()];
       if (pose) setSupport(pose.file, mode);
     });
+  }
+  const scaleKeys = [
+    [['BracketLeft'], 'Размер позы: меньше на 3 %', 1 / 1.03],
+    [['BracketRight'], 'Размер позы: больше на 3 %', 1.03],
+    [['Shift+BracketLeft'], 'Размер позы: меньше на 10 %', 1 / 1.1],
+    [['Shift+BracketRight'], 'Размер позы: больше на 10 %', 1.1],
+    [['Backslash', 'IntlBackslash'], 'Размер позы: сбросить к 100 %', null],
+  ];
+  for (const [keys, title, ratio] of scaleKeys) {
+    register(keys, title, () => nudgeScale(targetIndex(), ratio));
   }
   register(['KeyO'], 'Добавить папку-коллекцию', (event) => {
     if (!event.repeat) addCollection();

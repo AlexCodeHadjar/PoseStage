@@ -22,6 +22,9 @@ type Pose = {
   box: [x1, y1, x2, y2];               // bbox альфы > 8 (для JPG — всё изображение)
   support: {version, mode: "feet"|"kneel"|"ground", cut, profile: [x, y][]};
   support_source: "auto"|"bundled"|"user";  // откуда взят mode
+  area: number;         // площадь силуэта (альфа > 8), px исходника
+  stature: number;      // оценка роста стоя, px исходника: reference·√area коллекции
+  scale_adjust: number; // ручная поправка размера 0.5…2 (1 — без поправки)
 }
 ```
 
@@ -41,6 +44,20 @@ type Pose = {
 - `set_support_mode(file: string, mode: "feet"|"kneel"|"ground"|"auto") -> Pose`
   Пользовательское переопределение хранится в `%APPDATA%\PoseStage\support_overrides.json`
   (по коллекции). `"auto"` удаляет переопределение. Возвращает пересчитанную позу.
+  Рост (`stature`) от режима не зависит: `reference` коллекции фиксируется при сканировании.
+
+### Размер позы
+
+Площадь силуэта одного тела почти не зависит от позы, поэтому `stature = reference·√area`,
+где `reference` — медиана «высота рамки / √площади» по стоячим прозрачным позам коллекции.
+Если стоячих поз нет, берётся 2,6 (значение для манекенов этого набора). У непрозрачных картинок
+(фото без прозрачности) силуэта нет — их рост равен высоте рамки.
+Фронтенд даёт всем позам один масштаб тела: `stature·scale = 0.61·высота окна·scale_adjust`
+(`placement.js: bodyScale`), и уменьшает позу только если иначе опоры не помещаются на крышку
+или фигура выходит за края экрана (`placement.limited`).
+
+- `set_pose_scale(file: string, factor: number) -> Pose` — ручная поправка 0.5…2, `1` удаляет её.
+  Хранится в `scale_overrides.json` по коллекции. Иное значение — `ValueError`.
 
 ### Коллекции (несколько папок)
 
@@ -68,9 +85,19 @@ type Collection = {id: string; name: string; folder: string; active: boolean};
 - `get_view_prefs() -> object`, `save_view_prefs(prefs: object) -> object`
   Хранятся в `view_prefs.json`; бэкенд принимает только известные ключи с проверкой типов:
   `flip: bool, gray: bool, grid: "off"|"thirds"|"proportions", on_top: bool, compact: bool,
-  filter: {mode: "all"|"feet"|"kneel"|"ground", favorites: bool, tag: string|null, search: string}`.
+  filter: {mode: "all"|"feet"|"kneel"|"ground", favorites: bool, tag: string|null, search: string},
+  parallax: "off"|"soft"|"strong", background: {mode: "studio"|"image", id: string|null, blur: 0…24, dim: 0…0.85}`.
   `save_view_prefs` сливает частичный объект с сохранённым; `get_view_prefs` при первом
   запуске возвращает `{}` — значения по умолчанию задаёт фронтенд.
+
+### Фон
+
+- `choose_background() -> {id, url, w, h} | null` — диалог (png/jpg/jpeg/webp). Копия (EXIF-поворот,
+  длинная сторона ≤ 4096) сохраняется в `%APPDATA%\PoseStage\backgrounds\<sha256[:16]>.png|jpg`
+  и выбирается. Оригинал не меняется. Отмена или нет окна — `null`; битый файл — `ValueError`.
+- `list_backgrounds() -> [{id, url, w, h}]`, `remove_background(id) -> list` (удалённый выбранный
+  фон переключает настройки на студию).
+- HTTP: `${prefix}/backgrounds/<id>.<png|jpg>`.
 
 ### Окно
 
@@ -131,6 +158,12 @@ type App = {
     resetView(): void;
     figureRect(): {left, top, width, height} | null;  // экранный bbox фигуры, CSS px
     onFrame(cb: () => void): () => void;
+    // Камера облетает подиум за курсором: off — без параллакса, soft — ±4°, strong — ±9,5° / ±3,5°.
+    setParallax(mode: "off"|"soft"|"strong"): string;
+    parallax(): string;
+    // Фон-изображение на плоскости за подиумом (настоящий параллакс); последний вызов побеждает.
+    setBackground(state: {mode: "studio"|"image", url?: string, blur?: number, dim?: number}): Promise<object>;
+    background(): object;
   };
 };
 ```
@@ -154,8 +187,11 @@ type App = {
 | перетаскивание при масштабе > 1 | панорама | художник |
 | T | поверх всех окон | художник |
 | C | компактное окно | художник |
+| B | фон: студия / изображение, размытие, затемнение | художник |
+| P | параллакс: выкл → мягкий → сильный | художник |
 | G | галерея миниатюр | навигация |
 | S | избранное | навигация |
 | 1 / 2 / 3 / 0 | опора: стопы / колени / сидя-лёжа / авто | навигация |
+| [ / ], Shift+[ / ], \ | размер позы −3 % / +3 %, ±10 %, сброс | навигация |
 | O | добавить папку-коллекцию | навигация |
 | счётчик «12 / 220» и имя файла | — | навигация |

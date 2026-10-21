@@ -113,21 +113,36 @@ export function forgetPose(pose) {
   supports.delete(pose);
 }
 
+// A standing body (the pose's estimated stature) takes this share of the viewport height.
+export const STATURE_SHARE = 0.61;
+
+// Screen px per source px that gives every pose of a collection the same body size:
+// pose.stature is the estimated standing height in source px (poses.py: reference·√area),
+// pose.scale_adjust the user's correction ([ / ] keys). Without stature (old data) the
+// bounding box stands in for the body.
+export function bodyScale(pose, mapping) {
+  const [, y1, , y2] = pose.box;
+  const stature = pose.stature > 0 ? pose.stature : y2 - y1;
+  const adjust = pose.scale_adjust > 0 ? pose.scale_adjust : 1;
+  return ((STATURE_SHARE * mapping.height) / stature) * adjust;
+}
+
 export function fitPlacement(pose, mapping) {
   const [x1, y1, x2, y2] = pose.box;
-  const bh = y2 - y1;
   const { threshold, contacts, cx, cy } = supportData(pose);
 
-  // Upper bound: 61% of the viewport height, 90% of the podium width, and keep
-  // the figure between 43% above / 44.5% below the podium center line.
+  // The same body size for all poses; shrink a pose only if it cannot fit otherwise:
+  // keep it inside 42% of the viewport width either side of the podium axis (arms may
+  // reach past the podium, not past the arrows) and between 43% above / 44.5% below
+  // the podium center line.
+  const desired = bodyScale(pose, mapping);
+  const halfWidth = mapping.width * 0.42;
   let high = Math.min(
-    (0.61 * mapping.height) / bh,
-    (0.9 * mapping.diameter) / (2 * Math.max(cx - x1, x2 - cx)),
-  );
-  high = Math.min(
-    high,
-    (mapping.height * 0.43 - mapping.centerY) / (cy - y1),
-    (mapping.centerY + mapping.height * 0.445) / (y2 - cy),
+    desired,
+    (halfWidth + mapping.centerX) / Math.max(1e-9, cx - x1),
+    (halfWidth - mapping.centerX) / Math.max(1e-9, x2 - cx),
+    (mapping.height * 0.43 - mapping.centerY) / Math.max(1e-9, cy - y1),
+    (mapping.centerY + mapping.height * 0.445) / Math.max(1e-9, y2 - cy),
   );
 
   const temp = new THREE.Vector3();
@@ -158,6 +173,9 @@ export function fitPlacement(pose, mapping) {
 
   return {
     scale: lo,
+    desired,
+    // The pose had to be made smaller than the common body size (podium or screen edge).
+    limited: lo < desired * 0.999,
     cx,
     cy,
     threshold,

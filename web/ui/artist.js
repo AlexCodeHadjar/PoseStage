@@ -1,4 +1,5 @@
-// Artist tools (mirror, grayscale, grid, zoom/pan, on-top, compact) — implemented against docs/API.md §2.
+// Artist tools (mirror, grayscale, grid, background, parallax, zoom/pan, on-top, compact) —
+// implemented against docs/API.md §2.
 //
 // Mirror and grayscale are CSS classes on the WebGL canvas (GPU-composited, no re-render).
 // Because the mirror is a pure screen-space flip, this module wraps app.view.setZoom/pan/
@@ -15,6 +16,12 @@ const TOAST_MS = 1400;
 const GRID_MODES = ['off', 'thirds', 'proportions'];
 const GRID_NAMES = { off: 'выкл', thirds: 'трети', proportions: 'пропорции' };
 const HEADS = 8;
+const PARALLAX_MODES = ['off', 'soft', 'strong'];
+const PARALLAX_NAMES = { off: 'выкл', soft: 'мягкий', strong: 'сильный' };
+const BACKGROUND_ID = /^[0-9a-f]{16}$/;
+const BLUR_MAX = 24;
+const DIM_MAX = 0.85;
+const PANEL_ID = 'artist-background';
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 const clampZoom = (z) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
@@ -22,7 +29,17 @@ const onOff = (on) => (on ? 'вкл' : 'выкл');
 
 export function install(app) {
   const canvas = app.view.canvas;
-  const state = { flip: false, gray: false, grid: 'off', on_top: false, compact: false };
+  const state = {
+    flip: false,
+    gray: false,
+    grid: 'off',
+    on_top: false,
+    compact: false,
+    parallax: 'soft',
+    background: { mode: 'studio', id: null, blur: 0, dim: 0 },
+  };
+  let backgrounds = []; // [{id, url, w, h}]: copies in %APPDATA%\PoseStage\backgrounds
+  let panelOpen = false;
   const touched = new Set(); // keys changed by the user before the saved prefs arrived
   let windowOnTop = false; // actual window on-top state (compact forces it on)
   let compactSince = 0; // time of the last set_compact call (resize-detection grace period)
@@ -168,6 +185,16 @@ export function install(app) {
       ['M4.5 4.5h15v15h-15z'],
       ['M9.5 4.5v15M14.5 4.5v15M4.5 9.5h15M4.5 14.5h15'],
     ], () => cycleGrid()),
+    background: button('Фон', 'B', [
+      ['M4 5.5h16v13H4z'],
+      ['M4 15.5l4.5-4.5 4 4 2.5-2.5 5 5'],
+      ['M15.6 7.6a1.4 1.4 0 1 0 0 2.8a1.4 1.4 0 1 0 0-2.8z', 'fill'],
+    ], () => togglePanel(), false),
+    parallax: button('Параллакс', 'P', [
+      ['M12 4 3.5 8.5 12 13l8.5-4.5z'],
+      ['M3.5 12.5 12 17l8.5-4.5'],
+      ['M3.5 16.2 12 20.7l8.5-4.5', 'dash'],
+    ], () => cycleParallax()),
     zoom: button('Сбросить масштаб', 'Z', [
       ['M10.5 4.5a6 6 0 1 0 0 12a6 6 0 1 0 0-12z'],
       ['M15 15l5 5M8 10.5h5'],
@@ -214,6 +241,12 @@ export function install(app) {
       ? 'Поверх всех окон (T) — включено компактным режимом'
       : 'Поверх всех окон (T)';
     setPressed(buttons.compact, state.compact);
+    setPressed(buttons.parallax, state.parallax !== 'off');
+    buttons.parallax.dataset.mode = state.parallax === 'strong' ? '2' : '';
+    buttons.parallax.title = `Параллакс: ${PARALLAX_NAMES[state.parallax]} (P)`;
+    buttons.background.classList.toggle('is-active', state.background.mode === 'image' || panelOpen);
+    buttons.background.setAttribute('aria-expanded', String(panelOpen));
+    buttons.background.title = state.background.mode === 'image' ? 'Фон: изображение (B)' : 'Фон: студия (B)';
     grid.hidden = state.grid === 'off';
     gridDirty = true;
     drawGrid();
@@ -508,6 +541,309 @@ export function install(app) {
     }
   });
 
+  // --- 4a. Parallax -------------------------------------------------------
+  function setParallax(mode) {
+    const applied = typeof app.view.setParallax === 'function' ? app.view.setParallax(mode) : mode;
+    state.parallax = PARALLAX_MODES.includes(applied) ? applied : mode;
+  }
+
+  function cycleParallax() {
+    touched.add('parallax');
+    setParallax(PARALLAX_MODES[(PARALLAX_MODES.indexOf(state.parallax) + 1) % PARALLAX_MODES.length]);
+    render();
+    save({ parallax: state.parallax });
+    showToast(`Параллакс: ${PARALLAX_NAMES[state.parallax]}`);
+  }
+
+  // --- 4b. Background: studio or a stored picture (glass popover) ------------
+  const panel = document.createElement('div');
+  panel.className = 'artist-bg';
+  panel.hidden = true;
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-label', 'Фон');
+  const panelTitle = document.createElement('div');
+  panelTitle.className = 'artist-bg-title';
+  panelTitle.textContent = 'Фон';
+  const tiles = document.createElement('div');
+  tiles.className = 'artist-bg-tiles';
+  const actions = document.createElement('div');
+  actions.className = 'artist-bg-actions';
+  const addButton = textButton('Добавить изображение…', () => addBackground().catch(report));
+  const removeButton = textButton('Удалить', () => removeSelected().catch(report));
+  removeButton.classList.add('is-danger');
+  actions.append(addButton, removeButton);
+  const blurSlider = slider('Размытие', 0, BLUR_MAX, 1, (v) => `${Math.round(v)}`, 'blur');
+  const dimSlider = slider('Затемнение', 0, DIM_MAX, 0.01, (v) => `${Math.round(v * 100)} %`, 'dim');
+  panel.append(panelTitle, tiles, actions, blurSlider.row, dimSlider.row);
+  document.body.append(panel);
+
+  function textButton(label, onClick) {
+    const element = document.createElement('button');
+    element.type = 'button';
+    element.className = 'artist-bg-button';
+    element.textContent = label;
+    element.addEventListener('click', (event) => {
+      event.stopPropagation();
+      onClick();
+    });
+    return element;
+  }
+
+  function slider(label, min, max, step, format, key) {
+    const row = document.createElement('label');
+    row.className = 'artist-bg-slider';
+    const name = document.createElement('span');
+    name.textContent = label;
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = String(min);
+    input.max = String(max);
+    input.step = String(step);
+    input.setAttribute('aria-label', label);
+    const output = document.createElement('output');
+    row.append(name, input, output);
+    input.addEventListener('input', () => {
+      touched.add('background');
+      state.background[key] = Math.min(max, Math.max(min, Number(input.value) || 0));
+      output.textContent = format(state.background[key]);
+      scheduleBackground();
+    });
+    input.addEventListener('change', saveBackground);
+    return {
+      row,
+      sync() {
+        input.value = String(state.background[key]);
+        output.textContent = format(state.background[key]);
+        input.disabled = state.background.mode !== 'image';
+      },
+    };
+  }
+
+  function selectedEntry() {
+    const bg = state.background;
+    return bg.mode === 'image' ? backgrounds.find((entry) => entry.id === bg.id) || null : null;
+  }
+
+  function tile(label, selected, onClick, imageUrl = null) {
+    const element = document.createElement('button');
+    element.type = 'button';
+    element.className = 'artist-bg-tile';
+    element.setAttribute('aria-label', label);
+    element.setAttribute('aria-pressed', String(selected));
+    element.title = label;
+    element.classList.toggle('is-selected', selected);
+    if (imageUrl) {
+      const img = document.createElement('img');
+      img.alt = '';
+      img.decoding = 'async';
+      img.loading = 'lazy';
+      img.src = imageUrl;
+      element.append(img);
+    } else {
+      element.classList.add('is-studio');
+      element.textContent = label;
+    }
+    element.addEventListener('click', (event) => {
+      event.stopPropagation();
+      onClick();
+    });
+    return element;
+  }
+
+  function renderPanel() {
+    const selected = selectedEntry();
+    const focused = panel.contains(document.activeElement) ? document.activeElement.getAttribute('aria-label') : null;
+    tiles.replaceChildren(
+      tile('Студия', !selected, () => selectBackground(null)),
+      ...backgrounds.map((entry, i) => tile(
+        `Изображение ${i + 1} · ${entry.w}×${entry.h}`,
+        selected?.id === entry.id,
+        () => selectBackground(entry.id),
+        entry.url,
+      )),
+    );
+    if (focused) {
+      [...tiles.children].find((element) => element.getAttribute('aria-label') === focused)?.focus();
+    }
+    removeButton.disabled = !selected;
+    addButton.disabled = typeof currentApi()?.choose_background !== 'function' || addButton.dataset.busy === '1';
+    blurSlider.sync();
+    dimSlider.sync();
+    placePanel(); // the content height may have changed
+  }
+
+  // The popover never covers the core's ← → arrows, the navigator's counter or the tool strip.
+  // Tried in order: left of the strip; left of the strip but above the counter; above the
+  // strip; the column between the arrows (narrow layout, scrolls if it must); finally above
+  // the strip with scrolling.
+  const PANEL_GAP = 8;
+  const PANEL_WIDTH = 292;
+  function panelObstacles() {
+    const rect = (selector) => {
+      const element = document.querySelector(selector);
+      const r = element && element.getClientRects().length ? element.getBoundingClientRect() : null;
+      return r && r.width > 0 && r.height > 0 ? r : null;
+    };
+    return { prev: rect('#prev'), next: rect('#next'), counter: rect('.nav-counter'), strip: strip.getBoundingClientRect() };
+  }
+
+  function placePanel() {
+    if (!panelOpen) return;
+    const { prev, next, counter, strip: tools } = panelObstacles();
+    const blocks = [prev, next, counter, tools].filter(Boolean);
+    const vw = innerWidth;
+    const vh = innerHeight;
+    const hits = (a, b) => a.left < b.right + PANEL_GAP && a.right > b.left - PANEL_GAP
+      && a.top < b.bottom + PANEL_GAP && a.bottom > b.top - PANEL_GAP;
+    const tryPlace = (width, right, bottom, scroll = false) => {
+      width = Math.floor(Math.min(PANEL_WIDTH, width));
+      right = Math.round(right);
+      bottom = Math.round(bottom);
+      if (width < 150) return false;
+      panel.classList.toggle('is-narrow', width < 260);
+      panel.style.width = `${width}px`;
+      panel.style.right = `${right}px`;
+      panel.style.bottom = `${bottom}px`;
+      panel.style.maxHeight = 'none';
+      const room = vh - bottom - PANEL_GAP;
+      const natural = panel.offsetHeight;
+      if (room < 120 || (!scroll && natural > room)) return false;
+      const height = Math.min(natural, room);
+      const box = { left: vw - right - width, right: vw - right, top: vh - bottom - height, bottom: vh - bottom };
+      if (box.left < PANEL_GAP || blocks.some((b) => hits(box, b))) return false;
+      panel.style.maxHeight = `${room}px`;
+      return true;
+    };
+    const full = vw - 2 * PANEL_GAP;
+    const besideStrip = vw - tools.left + 10;
+    // The column between the arrows, above whatever sits at the bottom inside it.
+    const left = Math.ceil(prev ? prev.right + PANEL_GAP : PANEL_GAP);
+    const right = Math.floor(next ? next.left - PANEL_GAP : vw - PANEL_GAP);
+    const floor = Math.min(vh, ...[tools, counter].filter((b) => b && b.left < right && b.right > left).map((b) => b.top));
+    const placed = tryPlace(Math.min(full, tools.left - 10 - PANEL_GAP), besideStrip, vh - tools.bottom)
+      || (counter && tryPlace(Math.min(full, tools.left - 10 - PANEL_GAP), besideStrip, vh - counter.top + PANEL_GAP))
+      || tryPlace(Math.min(full, tools.right - PANEL_GAP), vw - tools.right, vh - tools.top + 10)
+      || tryPlace(right - left, vw - right, vh - floor + PANEL_GAP, true);
+    if (!placed) {
+      tryPlace(Math.min(full, tools.right - PANEL_GAP), vw - tools.right, vh - tools.top + 10, true);
+      const room = vh - (vh - tools.top + 10) - PANEL_GAP;
+      panel.style.maxHeight = `${Math.max(120, room)}px`;
+    }
+  }
+
+  function openPanel() {
+    if (panelOpen) return;
+    panelOpen = true;
+    panel.hidden = false;
+    renderPanel();
+    placePanel();
+    app.overlays.open(PANEL_ID, closePanel);
+    render();
+    refreshBackgrounds().catch(report);
+    (tiles.querySelector('.is-selected') || tiles.firstElementChild)?.focus({ preventScroll: true });
+  }
+
+  function closePanel() {
+    if (!panelOpen) return;
+    panelOpen = false;
+    if (panel.contains(document.activeElement)) document.activeElement.blur();
+    panel.hidden = true;
+    app.overlays.close(PANEL_ID);
+    render();
+  }
+
+  function togglePanel() {
+    if (panelOpen) closePanel();
+    else openPanel();
+  }
+
+  // A press anywhere else closes the popover (the B button toggles it itself).
+  window.addEventListener('pointerdown', (event) => {
+    if (panelOpen && !panel.contains(event.target) && !buttons.background.contains(event.target)) {
+      closePanel();
+    }
+  }, true);
+  window.addEventListener('resize', placePanel);
+
+  async function refreshBackgrounds() {
+    const list = await call('list_backgrounds');
+    if (Array.isArray(list)) {
+      backgrounds = list.filter((entry) => entry && BACKGROUND_ID.test(entry.id) && typeof entry.url === 'string');
+      if (panelOpen) renderPanel();
+    }
+  }
+
+  function saveBackground() {
+    save({ background: { ...state.background } });
+  }
+
+  let failedBackground = null; // url whose load error was already shown
+  async function applyBackground() {
+    if (typeof app.view.setBackground !== 'function') return;
+    const entry = selectedEntry();
+    const bg = state.background;
+    try {
+      await app.view.setBackground({ mode: entry ? 'image' : 'studio', url: entry?.url ?? null, blur: bg.blur, dim: bg.dim });
+      failedBackground = null;
+    } catch (error) {
+      if (failedBackground !== entry?.url) {
+        failedBackground = entry?.url ?? null;
+        report(error);
+        showToast('Не удалось загрузить фон');
+      }
+    }
+  }
+
+  let backgroundFrame = 0;
+  function scheduleBackground() {
+    if (!backgroundFrame) {
+      backgroundFrame = requestAnimationFrame(() => {
+        backgroundFrame = 0;
+        applyBackground();
+      });
+    }
+  }
+
+  function selectBackground(id) {
+    touched.add('background');
+    state.background.mode = id ? 'image' : 'studio';
+    state.background.id = id || null;
+    if (panelOpen) renderPanel();
+    render();
+    applyBackground();
+    saveBackground();
+  }
+
+  async function addBackground() {
+    const api = currentApi();
+    if (typeof api?.choose_background !== 'function' || addButton.dataset.busy === '1') return;
+    addButton.dataset.busy = '1';
+    addButton.disabled = true;
+    try {
+      const entry = await api.choose_background();
+      if (!entry || !BACKGROUND_ID.test(entry.id)) return;
+      await refreshBackgrounds();
+      if (!backgrounds.some((b) => b.id === entry.id)) backgrounds.push(entry);
+      selectBackground(entry.id);
+      showToast('Фон: изображение');
+    } catch (error) {
+      report(error);
+      showToast('Не удалось открыть изображение');
+    } finally {
+      addButton.dataset.busy = '';
+      if (panelOpen) renderPanel();
+    }
+  }
+
+  async function removeSelected() {
+    const entry = selectedEntry();
+    if (!entry) return;
+    const list = await call('remove_background', entry.id);
+    backgrounds = Array.isArray(list) ? list : backgrounds.filter((b) => b.id !== entry.id);
+    selectBackground(null);
+    showToast('Фон удалён, включена студия');
+  }
+
   // --- 4. Window: on top / compact ---------------------------------------
   async function setWindowOnTop(on) {
     const result = await call('set_on_top', on);
@@ -574,6 +910,8 @@ export function install(app) {
     { keys: ['KeyH'], title: 'Зеркально по горизонтали', handler: once(toggleFlip) },
     { keys: ['KeyV'], title: 'Оттенки серого (тональный этюд)', handler: once(toggleGray) },
     { keys: ['KeyL'], title: 'Сетка: выкл → трети → пропорции (8 голов)', handler: once(cycleGrid) },
+    { keys: ['KeyB'], title: 'Фон: студия или изображение', handler: once(togglePanel) },
+    { keys: ['KeyP'], title: 'Параллакс: выкл → мягкий → сильный', handler: once(cycleParallax) },
     { keys: ['Equal', 'Shift+Equal', 'NumpadAdd'], title: 'Приблизить', handler: () => zoomBy(KEY_STEP, centerX(), centerY()) },
     { keys: ['Minus', 'NumpadSubtract'], title: 'Отдалить', handler: () => zoomBy(1 / KEY_STEP, centerX(), centerY()) },
     { keys: ['KeyZ'], title: 'Сбросить масштаб и панораму', handler: once(() => resetZoom()) },
@@ -646,7 +984,22 @@ export function install(app) {
   }
 
   async function restore() {
-    const prefs = (await call('get_view_prefs')) || {};
+    const [saved, list] = await Promise.all([call('get_view_prefs'), call('list_backgrounds')]);
+    const prefs = saved || {};
+    if (Array.isArray(list)) {
+      backgrounds = list.filter((entry) => entry && BACKGROUND_ID.test(entry.id) && typeof entry.url === 'string');
+    }
+    if (!touched.has('parallax') && PARALLAX_MODES.includes(prefs.parallax)) state.parallax = prefs.parallax;
+    setParallax(state.parallax);
+    const bg = prefs.background;
+    if (!touched.has('background') && bg && typeof bg === 'object') {
+      if (bg.mode === 'studio' || bg.mode === 'image') state.background.mode = bg.mode;
+      if (bg.id === null || BACKGROUND_ID.test(bg.id)) state.background.id = bg.id;
+      if (Number.isFinite(bg.blur)) state.background.blur = Math.min(BLUR_MAX, Math.max(0, bg.blur));
+      if (Number.isFinite(bg.dim)) state.background.dim = Math.min(DIM_MAX, Math.max(0, bg.dim));
+      applyBackground();
+    }
+    if (panelOpen) renderPanel();
     if (!touched.has('flip') && typeof prefs.flip === 'boolean') state.flip = prefs.flip;
     if (!touched.has('gray') && typeof prefs.gray === 'boolean') state.gray = prefs.gray;
     if (!touched.has('grid') && GRID_MODES.includes(prefs.grid)) state.grid = prefs.grid;

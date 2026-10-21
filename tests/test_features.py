@@ -183,6 +183,73 @@ class ScanTests(Base):
         self.assertEqual(snapshot(self.images), before)
 
 
+class BodyScaleTests(Base):
+    def test_area_and_stature_give_one_body_size(self):
+        # The same 25×40 body drawn at half size: half the stature, whatever the canvas.
+        png(self.images / 'small.png', size=(80, 120), box=(10, 20, 22, 40))
+        catalog = self.catalog()
+        by_file = {pose['file']: pose for pose in catalog.get()}
+        self.assertEqual(by_file['pose-1.png']['area'], 25 * 40)
+        self.assertEqual(by_file['small.png']['area'], 12 * 20)
+        # Standing poses define the reference: stature of a standing pose == its box height.
+        self.assertAlmostEqual(catalog.reference, 40 / 1000 ** .5, places=9)
+        self.assertAlmostEqual(by_file['pose-1.png']['stature'], 40, places=2)
+        self.assertAlmostEqual(by_file['small.png']['stature'], 40 * (240 / 1000) ** .5, places=2)
+        self.assertEqual(by_file['pose-1.png']['scale_adjust'], 1.0)
+
+    def test_opaque_pictures_use_their_box_as_the_body(self):
+        jpg(self.images / 'tall.jpg', size=(1024, 1536))
+        jpg(self.images / 'wide.jpg', size=(1536, 1024))
+        by_file = {pose['file']: pose for pose in self.catalog().get()}
+        self.assertEqual(by_file['tall.jpg']['stature'], 1536)
+        self.assertEqual(by_file['wide.jpg']['stature'], 1024)
+        self.assertAlmostEqual(by_file['pose-1.png']['stature'], 40, places=2)  # cut-outs unchanged
+
+    def test_reference_uses_standing_transparent_poses_only(self):
+        items = [{'box': [0, 0, 10, 40], 'w': 100, 'h': 100, 'area': 100, 'support': {'mode': 'feet'}},
+                 {'box': [0, 0, 10, 10], 'w': 100, 'h': 100, 'area': 100, 'support': {'mode': 'ground'}},
+                 {'box': [0, 0, 10, 99], 'w': 10, 'h': 99, 'area': 990, 'support': {'mode': 'feet'}}]  # opaque
+        self.assertEqual(poses.body_reference(items), 4.0)
+        self.assertEqual(poses.body_reference(items[1:]), poses.DEFAULT_REFERENCE)
+
+    def test_old_cache_without_area_is_measured_again(self):
+        catalog = self.catalog()
+        cache = poses.read_dict(poses.DATA_DIR / 'poses_cache.json')
+        for entry in cache.values():
+            entry.pop('area')
+        poses.write_json(poses.DATA_DIR / 'poses_cache.json', cache)
+        with patch('poses.Image.open', wraps=Image.open) as opened:
+            catalog.scan()
+            self.assertEqual(opened.call_count, 3)
+        self.assertTrue(all(pose['area'] == 1000 for pose in catalog.get()))
+
+    def test_scale_override_round_trip_and_validation(self):
+        catalog = self.catalog()
+        api = app.Api(catalog)
+        pose = api.set_pose_scale('pose-2.png', 1.25)
+        self.assertEqual(pose['scale_adjust'], 1.25)
+        self.assertEqual(pose['support']['mode'], 'kneel')  # other pose data unchanged
+        before = {p['file']: p['stature'] for p in catalog.get()}
+        catalog.set_mode('pose-1.png', 'ground')  # a mode change keeps every stature
+        self.assertEqual({p['file']: p['stature'] for p in catalog.get()}, before)
+        catalog.scan()
+        self.assertEqual(next(p for p in catalog.get() if p['file'] == 'pose-2.png')['scale_adjust'], 1.25)
+        self.assertEqual(api.set_pose_scale('pose-2.png', 1)['scale_adjust'], 1.0)
+        self.assertEqual(poses.read_dict(poses.DATA_DIR / 'scale_overrides.json'), {})
+        for bad in (0.1, 3, float('nan'), '1.2', None, True):
+            with self.assertRaises(ValueError):
+                api.set_pose_scale('pose-1.png', bad)
+        with self.assertRaises(ValueError):
+            api.set_pose_scale('missing.png', 1.1)
+
+    def test_corrupt_scale_store_is_ignored(self):
+        cid = poses.collection_id(self.images.resolve())
+        poses.write_json(poses.DATA_DIR / 'scale_overrides.json',
+                         {cid: {'pose-1.png': 'big', 'pose-2.png': 9, 'pose-3.png': 0.8}})
+        by_file = {p['file']: p['scale_adjust'] for p in self.catalog().get()}
+        self.assertEqual(by_file, {'pose-1.png': 1.0, 'pose-2.png': 1.0, 'pose-3.png': 0.8})
+
+
 class StateTests(Base):
     def test_state_follows_file_when_order_changes(self):
         api = app.Api(self.catalog())

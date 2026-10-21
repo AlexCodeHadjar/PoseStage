@@ -167,11 +167,11 @@ body.error .artist-tools {
 }
 
 /*
- * Short windows: one 6-button column (~280 px) would reach the core's → arrow, which is
- * centred at top: 50% (±30 px). Two columns of 36-px buttons (~130 px tall) stay below it
- * down to ~350 px of height.
+ * Short windows: one 8-button column (~360 px) would reach the core's → arrow, which is
+ * centred at top: 50% (±30 px). Two columns of 36-px buttons (~170 px tall) stay below it
+ * down to ~440 px of height.
  */
-@media (max-height: 700px) {
+@media (max-height: 840px) {
   .artist-tools {
     grid-template-columns: repeat(2, 36px);
     border-radius: 22px;
@@ -192,10 +192,173 @@ body.error .artist-tools {
 /*
  * Short AND narrow windows: the two-column strip would reach the navigator's counter row
  * (centred, ≈18–56 px from the bottom, up to 56vw wide): lift it above that row. It still
- * clears the → arrow down to ~450 px of height.
+ * clears the → arrow down to ~540 px of height.
  */
-@media (max-width: 520px) and (max-height: 700px) {
+@media (max-width: 520px) and (max-height: 840px) {
   .artist-tools {
     bottom: 64px;
   }
+}
+
+/* Even shorter narrow windows (down to the 360×480 minimum): three columns, three rows. */
+@media (max-width: 520px) and (max-height: 560px) {
+  .artist-tools {
+    grid-template-columns: repeat(3, 36px);
+  }
+
+  .artist-toast {
+    right: 156px;
+    max-width: calc(100vw - 172px);
+  }
+}
+
+/* --- Background popover («Фон», B) --------------------------------------- */
+.artist-bg {
+  position: fixed;
+  right: 80px;
+  bottom: 18px;
+  z-index: 30;
+  box-sizing: border-box;
+  width: min(292px, calc(100vw - 16px));
+  overflow-y: auto;
+  padding: 12px 12px 10px;
+  color: #e4e6e9;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 16px;
+  background: rgba(30, 32, 36, 0.72);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.35);
+  font-size: 12.5px;
+}
+
+.artist-bg[hidden] {
+  display: none;
+}
+
+.artist-bg-title {
+  margin: 0 2px 8px;
+  color: #c9ccd1;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.artist-bg-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.artist-bg-tile {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  color: #c9ccd1;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.05);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.15s;
+}
+
+.artist-bg-tile.is-studio {
+  background: radial-gradient(ellipse at 50% 30%, #3a3e45, #1d2024 75%);
+}
+
+.artist-bg-tile img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.artist-bg-tile:hover,
+.artist-bg-tile:focus-visible {
+  border-color: rgba(255, 255, 255, 0.45);
+  outline: none;
+  transform: scale(1.03);
+}
+
+.artist-bg-tile.is-selected {
+  border-color: #a9c6ff;
+  box-shadow: 0 0 0 1px #a9c6ff;
+}
+
+.artist-bg-actions {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0 6px;
+}
+
+.artist-bg-button {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 8px;
+  overflow: hidden;
+  color: #e4e6e9;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.07);
+  font: inherit;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.artist-bg-button.is-danger {
+  flex: 0 0 auto;
+}
+
+.artist-bg-button:hover:not(:disabled),
+.artist-bg-button:focus-visible {
+  background: rgba(255, 255, 255, 0.14);
+  outline: none;
+}
+
+.artist-bg-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.artist-bg-slider {
+  display: grid;
+  grid-template-columns: 84px 1fr 42px;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 2px;
+  color: #c9ccd1;
+}
+
+.artist-bg-slider input {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  accent-color: #a9c6ff;
+}
+
+.artist-bg-slider input:disabled {
+  opacity: 0.35;
+}
+
+/* Narrow placement (between the arrows): label above the slider. */
+.artist-bg.is-narrow .artist-bg-slider {
+  grid-template-columns: 1fr 42px;
+  row-gap: 0;
+}
+
+.artist-bg.is-narrow .artist-bg-slider span {
+  grid-column: 1 / -1;
+}
+
+.artist-bg.is-narrow .artist-bg-button.is-danger {
+  padding: 6px;
+}
+
+.artist-bg-slider output {
+  color: #9da1a8;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
