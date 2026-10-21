@@ -37,6 +37,7 @@ export function install(app) {
     compact: false,
     parallax: 'soft',
     sizing: 'file',
+    idle: false,
     background: { mode: 'studio', id: null, blur: 0, dim: 0 },
   };
   let backgrounds = []; // [{id, url, w, h}]: copies in %APPDATA%\PoseStage\backgrounds
@@ -571,6 +572,19 @@ export function install(app) {
       : 'Масштаб: единый размер тела ([ / ] — поправка)');
   }
 
+  // --- 4a'. Idle animation: breathing, weight shift, head (the pose comes alive) --
+  function applyIdle() {
+    if (typeof app.view.setIdle === 'function') state.idle = app.view.setIdle(state.idle);
+  }
+
+  function toggleIdle() {
+    touched.add('idle');
+    state.idle = !state.idle;
+    applyIdle();
+    save({ idle: state.idle });
+    showToast(state.idle ? 'Оживление: вкл — дыхание и лёгкое покачивание' : 'Оживление: выкл');
+  }
+
   // --- 4b. Background: studio or a stored picture (glass popover) ------------
   const panel = document.createElement('div');
   panel.className = 'artist-bg';
@@ -929,6 +943,7 @@ export function install(app) {
     { keys: ['KeyB'], title: 'Фон: студия или изображение', handler: once(togglePanel) },
     { keys: ['KeyP'], title: 'Параллакс: выкл → мягкий → сильный', handler: once(cycleParallax) },
     { keys: ['KeyM'], title: 'Масштаб поз: как в файле ↔ единый размер тела', handler: once(toggleSizing) },
+    { keys: ['KeyY'], title: 'Оживление позы: дыхание и лёгкое покачивание', handler: once(toggleIdle) },
     { keys: ['Equal', 'Shift+Equal', 'NumpadAdd'], title: 'Приблизить', handler: () => zoomBy(KEY_STEP, centerX(), centerY()) },
     { keys: ['Minus', 'NumpadSubtract'], title: 'Отдалить', handler: () => zoomBy(1 / KEY_STEP, centerX(), centerY()) },
     { keys: ['KeyZ'], title: 'Сбросить масштаб и панораму', handler: once(() => resetZoom()) },
@@ -1018,6 +1033,8 @@ export function install(app) {
     setParallax(state.parallax);
     if (!touched.has('sizing') && (prefs.sizing === 'body' || prefs.sizing === 'file')) state.sizing = prefs.sizing;
     applySizing();
+    if (!touched.has('idle') && typeof prefs.idle === 'boolean') state.idle = prefs.idle;
+    applyIdle();
     const bg = prefs.background;
     if (!touched.has('background') && bg && typeof bg === 'object') {
       if (bg.mode === 'studio' || bg.mode === 'image') state.background.mode = bg.mode;

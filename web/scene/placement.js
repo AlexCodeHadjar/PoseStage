@@ -108,6 +108,11 @@ function supportData(pose) {
   return data;
 }
 
+// Source points where the drawing rests on the podium (lower silhouette below the cut).
+export function supportContacts(pose) {
+  return supportData(pose).contacts;
+}
+
 // Drops cached support data of a pose object (use after mutating pose.support in place).
 export function forgetPose(pose) {
   supports.delete(pose);

@@ -141,8 +141,128 @@ def order(items, prefs, library):
 
 # --- Composition --------------------------------------------------------------------------------
 
+# --- Idle animation: a port of web/scene/idle.js ------------------------------------------------
+
+IDLE_LOOP = 6.0  # seconds; every motion's period divides it
+IDLE_SWAY, IDLE_HEAD, IDLE_HAND = math.radians(1.25), math.radians(2.4), math.radians(2.2)
+IDLE_LIFT = .028
+IDLE_FPS = 12
+IDLE_GRID = 18  # display px between warp mesh vertices
+
+
+def smooth(edge0, edge1, x):
+    t = min(1.0, max(0.0, (x - edge0) / (edge1 - edge0)))
+    return t * t * (3 - 2 * t)
+
+
+def rotate(x, y, cx, cy, angle):
+    c, s = math.cos(angle), math.sin(angle)
+    return cx + c * (x - cx) - s * (y - cy), cy + s * (x - cx) + c * (y - cy)
+
+
+def estimate_joints(pose):
+    """A skeleton from the box alone, for poses without detected or corrected joints."""
+    x1, y1, x2, y2 = pose["box"]
+    h, cx = y2 - y1, (x1 + x2) / 2
+    nose, shoulder, hip = {"kneel": (.09, .26, .62), "ground": (.12, .32, .75)}.get(
+        (pose.get("support") or {}).get("mode"), (.07, .2, .5))
+
+    def side(y, half):
+        return [[cx + half, y1 + y * h], [cx - half, y1 + y * h]]
+    shoulders = side(shoulder, .11 * h)
+    return {"nose": [cx, y1 + nose * h], "shoulders": shoulders, "elbows": shoulders, "wrists": shoulders,
+            "hips": side(hip, .07 * h)}
+
+
+class IdleRig:
+    """Displacement field (source px, y down) for breathing, weight shift, head and free hands;
+    supports stay pinned. Same math as createRig() in web/scene/idle.js."""
+
+    def __init__(self, pose):
+        j = pose.get("joints") or estimate_joints(pose)
+
+        def mid(pair):
+            return (pair[0][0] + pair[1][0]) / 2, (pair[0][1] + pair[1][1]) / 2
+        self.shoulders, self.hips, self.nose = mid(j["shoulders"]), mid(j["hips"]), tuple(j["nose"])
+        ax, ay = self.shoulders[0] - self.hips[0], self.shoulders[1] - self.hips[1]
+        self.torso = max(1.0, math.hypot(ax, ay))
+        self.axis = (ax / self.torso, ay / self.torso)
+        self.neck = (self.shoulders[0] + (self.nose[0] - self.shoulders[0]) * .35,
+                     self.shoulders[1] + (self.nose[1] - self.shoulders[1]) * .35)
+        head = math.hypot(self.nose[0] - self.shoulders[0], self.nose[1] - self.shoulders[1])
+        self.head_radius = max(head * 1.25, self.torso * .45)
+        self.neck_along = self.along(*self.neck)
+        width = max(1.0, math.hypot(j["shoulders"][0][0] - j["shoulders"][1][0],
+                                    j["shoulders"][0][1] - j["shoulders"][1][1]))
+        self.hands = []
+        for elbow, wrist in zip(j["elbows"], j["wrists"]):
+            reach = math.hypot(wrist[0] - elbow[0], wrist[1] - elbow[1])
+            from_axis = abs((wrist[0] - self.hips[0]) * self.axis[1] - (wrist[1] - self.hips[1]) * self.axis[0])
+            if reach > width * .25 and from_axis > width * .9:
+                self.hands.append((tuple(elbow), tuple(wrist)))
+        self.contacts = support_data(pose)[0]
+        self.pin = .06 * (pose["box"][3] - pose["box"][1])
+
+    def along(self, x, y):
+        return ((x - self.hips[0]) * self.axis[0] + (y - self.hips[1]) * self.axis[1]) / self.torso
+
+    def lock_at(self, x, y):
+        nearest = min(math.hypot(x - cx, y - cy) for cx, cy in self.contacts)
+        return 1 - smooth(self.pin * .5, self.pin * 1.6, nearest)
+
+    def displace(self, x, y, t, lock=None):
+        lock = self.lock_at(x, y) if lock is None else lock
+        if lock >= 1:
+            return 0.0, 0.0
+        w = 2 * math.pi / IDLE_LOOP
+        breath, sway = math.sin(2 * w * t), math.sin(w * t)
+        nod = math.sin(w * t + 1.3) + .35 * math.sin(3 * w * t + .4)
+        s = self.along(x, y)
+        nx, ny = x, y
+        weight = smooth(-.12, .25, s)
+        rx, ry = rotate(nx, ny, *self.hips, IDLE_SWAY * sway)
+        nx, ny = nx + (rx - nx) * weight, ny + (ry - ny) * weight
+        lift = IDLE_LIFT * self.torso * (breath * .5 + .5) * smooth(.15, .85, s)
+        nx, ny = nx + self.axis[0] * lift, ny + self.axis[1] * lift
+        distance = math.hypot(x - self.nose[0], y - self.nose[1])
+        head = smooth(-.05, .35, (s - self.neck_along) / .5) * (
+            1 - smooth(self.head_radius * .8, self.head_radius * 1.4, distance))
+        if head > 0:
+            rx, ry = rotate(nx, ny, *self.neck, IDLE_HEAD * nod)
+            nx, ny = nx + (rx - nx) * head, ny + (ry - ny) * head
+        for (ex, ey), (wx, wy) in self.hands:
+            reach = math.hypot(wx - ex, wy - ey)
+            hand = 1 - smooth(reach * .5, reach * 1.1, math.hypot(x - wx, y - wy))
+            if hand <= 0:
+                continue
+            rx, ry = rotate(nx, ny, ex, ey, IDLE_HAND * math.sin(2 * w * t + ex * .01))
+            nx, ny = nx + (rx - nx) * hand, ny + (ry - ny) * hand
+        free = 1 - lock
+        return (nx - x) * free, (ny - y) * free
+
+
+# --- Composition --------------------------------------------------------------------------------
+
+class Sprite:
+    """An RGBA image placed at (x, y) on the stage canvas."""
+    __slots__ = ("image", "x", "y")
+
+    def __init__(self, image, x, y):
+        self.image, self.x, self.y = image, x, y
+
+
+def place(out, image, x, y):
+    """alpha_composite that clips sprites hanging over the canvas edge (a lifted hand)."""
+    cx, cy = max(0, -x), max(0, -y)
+    if cx >= image.width or cy >= image.height:
+        return
+    if cx or cy:
+        image = image.crop((cx, cy, image.width, image.height))
+    out.alpha_composite(image, (x + cx, y + cy))
+
+
 class Stage:
-    """Podium sprite plus pose layers at one window size."""
+    """Podium sprite plus pose sprites at one window size."""
 
     def __init__(self, folder: Path, height: int, sizing: str = "file"):
         self.meta = load_meta(folder)
@@ -155,9 +275,10 @@ class Stage:
         ImageDraw.Draw(mask).polygon([(x * self.k, y * self.k) for x, y in podium_top(self.meta)], fill=255)
         self.top_mask = mask
         self.step = shadow_step(self.meta)
+        self.base = (self.meta["height"] / 2 - self.meta["centerY"]) * self.k  # support line, image y
 
-    def layers(self, pose, image):
-        """(figure layer, shadow layer) as full-size RGBA images, plus the placement."""
+    def prepare(self, pose, image):
+        """Placement and the figure resized for this stage (the idle rig is built on demand)."""
         p = fit_placement(pose, self.meta, self.sizing)
         x1, y1, x2, y2 = pose["box"]
         k, w, h = self.k, self.meta["width"], self.meta["height"]
@@ -165,30 +286,95 @@ class Stage:
         figure = image.crop((x1, y1, x2, y2)).resize(size, Image.LANCZOS)
         left = round((w / 2 + p["x"]) * k - size[0] / 2)
         top = round((h / 2 - p["y"]) * k - size[1] / 2)
-        layer = Image.new("RGBA", self.size, (0, 0, 0, 0))
-        layer.alpha_composite(figure, (left, top))
+        return {"pose": pose, "placement": p, "figure": figure, "left": left, "top": top,
+                "per_source": size[0] / (x2 - x1), "rig": None, "mesh": None}
 
-        # Cast shadow: the silhouette above the support line, sheared along the key light.
-        base = (h / 2 - self.meta["centerY"]) * k
-        silhouette = Image.new("L", self.size, 0)
-        silhouette.paste(figure.getchannel("A").point(lambda a: int(a * SHADOW_OPACITY)), (left, top))
-        ImageDraw.Draw(silhouette).rectangle((0, round(base), self.size[0], self.size[1]), fill=0)
+    def sprites(self, prepared, t=None):
+        """(figure sprite, shadow sprite); `t` (seconds) animates the idle loop."""
+        if t is None:
+            figure = Sprite(prepared["figure"], prepared["left"], prepared["top"])
+        else:
+            figure = self.animate(prepared, t)
+        return figure, self.cast_shadow(figure)
+
+    def animate(self, prepared, t):
+        """The figure warped by the idle rig: an inverse mesh warp of the display-size image."""
+        pose, k = prepared["pose"], prepared["per_source"]
+        x1, y1 = pose["box"][:2]
+        source = prepared["figure"]
+        pad = max(4, round(.06 * source.height))
+        if prepared["mesh"] is None:
+            rig = prepared["rig"] = IdleRig(pose)
+            width, height = source.width + 2 * pad, source.height + 2 * pad
+            xs = list(range(0, width, IDLE_GRID)) + [width]
+            ys = list(range(0, height, IDLE_GRID)) + [height]
+
+            def to_source(qx, qy):
+                return x1 + (qx - pad) / k, y1 + (qy - pad) / k
+            locks = {(qx, qy): rig.lock_at(*to_source(qx, qy)) for qx in xs for qy in ys}
+            prepared["mesh"] = (width, height, xs, ys, to_source, locks)
+            canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            canvas.alpha_composite(source, (pad, pad))
+            prepared["padded"] = canvas
+        width, height, xs, ys, to_source, locks = prepared["mesh"]
+        rig = prepared["rig"]
+        moved = {}
+        for point, lock in locks.items():
+            dx, dy = rig.displace(*to_source(*point), t, lock)
+            moved[point] = (point[0] - dx * k, point[1] - dy * k)  # the output point samples here
+        mesh = []
+        for left, right in zip(xs, xs[1:]):
+            for top, bottom in zip(ys, ys[1:]):
+                quad = [*moved[(left, top)], *moved[(left, bottom)], *moved[(right, bottom)], *moved[(right, top)]]
+                mesh.append(((left, top, right, bottom), quad))
+        warped = prepared["padded"].transform((width, height), Image.MESH, mesh, Image.BICUBIC)
+        return Sprite(warped, prepared["left"] - pad, prepared["top"] - pad)
+
+    def cast_shadow(self, figure: Sprite) -> Sprite:
+        """The silhouette above the support line, sheared along the key light onto the podium top."""
         a, c = self.step
         c = c if abs(c) > 1e-3 else -1e-3
-        warped = silhouette.transform(self.size, Image.AFFINE,
-                                      (1, -a / c, a / c * base, 0, -1 / c, base + base / c), Image.BICUBIC)
-        warped = ImageChops.multiply(warped.filter(ImageFilter.GaussianBlur(SHADOW_BLUR * k * 2)), self.top_mask)
-        shadow = Image.new("RGBA", self.size, (0, 0, 0, 0))
+        base, margin = self.base, max(6, round(SHADOW_BLUR * self.k * 6))
+        rise = max(0.0, base - figure.y)  # figure height above the support line
+        ox = figure.x - margin + min(0, round(a * rise))
+        oy = round(min(figure.y, base + c * rise)) - margin
+        width = figure.image.width + round(abs(a) * rise) + 2 * margin
+        height = max(1, round(base - oy) + margin)
+        local_base = base - oy
+        silhouette = Image.new("L", (width, height), 0)
+        silhouette.paste(figure.image.getchannel("A").point(lambda v: int(v * SHADOW_OPACITY)),
+                         (figure.x - ox, figure.y - oy))
+        ImageDraw.Draw(silhouette).rectangle((0, round(local_base), width, height), fill=0)
+        warped = silhouette.transform((width, height), Image.AFFINE,
+                                      (1, -a / c, a / c * local_base, 0, -1 / c, local_base + local_base / c),
+                                      Image.BICUBIC)
+        warped = ImageChops.multiply(warped.filter(ImageFilter.GaussianBlur(SHADOW_BLUR * self.k * 2)),
+                                     self.top_mask.crop((ox, oy, ox + width, oy + height)))
+        shadow = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         shadow.putalpha(warped)
-        return layer, shadow, p
+        return Sprite(shadow, ox, oy)
+
+    def layers(self, pose, image):
+        """(figure layer, shadow layer) as full-size RGBA images, plus the placement."""
+        prepared = self.prepare(pose, image)
+        full = []
+        for sprite in self.sprites(prepared):
+            layer = Image.new("RGBA", self.size, (0, 0, 0, 0))
+            place(layer, sprite.image, sprite.x, sprite.y)
+            full.append(layer)
+        return full[0], full[1], prepared["placement"]
 
     def frame(self, parts):
-        """parts: [(figure layer, shadow layer, opacity)] → straight-alpha RGBA frame."""
+        """parts: [(figure, shadow, opacity)], each a Sprite or a full-size image → RGBA frame."""
         out = self.podium.copy()
+
+        def put(layer, opacity):
+            image, x, y = (layer.image, layer.x, layer.y) if isinstance(layer, Sprite) else (layer, 0, 0)
+            place(out, image if opacity >= 1 else fade(image, opacity), x, y)
         for _, shadow, opacity in parts:
-            out.alpha_composite(shadow if opacity >= 1 else fade(shadow, opacity))
+            put(shadow, opacity)
         for figure, _, opacity in parts:
-            out.alpha_composite(figure if opacity >= 1 else fade(figure, opacity))
+            put(figure, opacity)
         return out
 
 
@@ -321,12 +507,14 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
     WM_DESTROY, WM_NCHITTEST, WM_KEYDOWN, WM_TIMER, WM_MOUSEWHEEL = 0x02, 0x84, 0x100, 0x113, 0x20A
     WM_NCLBUTTONDBLCLK, WM_NCRBUTTONUP, WM_EXITSIZEMOVE, WM_DPICHANGED = 0xA3, 0xA5, 0x232, 0x2E0
     WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_SHOW_AGAIN = 0x7B, 0x7E, 0x8000 + 1  # WM_APP + 1
+    WM_WTSSESSION_CHANGE = 0x2B1
     HTCAPTION, HWND_TOPMOST, HWND_NOTOPMOST = 2, wt.HWND(-1), wt.HWND(-2)
     MENU = {1: "next", 2: "prev", 10: "small", 11: "medium", 12: "large", 20: "on_top", 21: "sizing",
-            30: "window", 31: "close"}
+            22: "idle", 30: "window", 31: "close"}
 
     view = {"stage": None, "index": None, "layers": None, "anim": None, "frame": None, "hwnd": None,
-            "sizing": prefs.get("sizing") if prefs.get("sizing") in ("body", "file") else "file"}
+            "sizing": prefs.get("sizing") if prefs.get("sizing") in ("body", "file") else "file",
+            "idle": prefs.get("idle") is True, "prepared": None, "region": None, "idle_shadow": None}
     cache: dict[str, Image.Image] = {}
     lock = threading.Lock()
 
@@ -375,46 +563,92 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
         y = min(max(rect.top, top), max(top, bottom - height))
         if (x, y) != (rect.left, rect.top):
             user32.SetWindowPos(hwnd, None, x, y, 0, 0, 0x0015)  # NOSIZE | NOZORDER | NOACTIVATE
-            present(view["frame"])
+            push()
             remember_position()
 
-    def present(frame):
-        """Pushes a straight-alpha frame to the layered window (premultiplied BGRA DIB)."""
-        view["frame"] = frame
-        hwnd, (width, height) = view["hwnd"], frame.size
-        data = premultiplied_bgra(frame)
+    dib = {"size": None}
+
+    def release_dib():
+        if dib.get("memory"):
+            gdi32.SelectObject(dib["memory"], dib["old"])
+            gdi32.DeleteObject(dib["bitmap"])
+            gdi32.DeleteDC(dib["memory"])
+        dib.clear()
+        dib["size"] = None
+
+    def ensure_dib(size):
+        """One persistent premultiplied BGRA DIB per window size (idle frames patch it)."""
+        if dib["size"] == size:
+            return
+        release_dib()
+        width, height = size
         screen = user32.GetDC(None)
-        memory = gdi32.CreateCompatibleDC(screen)
-        bitmap = old = None
         try:
+            memory = gdi32.CreateCompatibleDC(screen)
             header = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), width, -height, 1, 32, 0)
             bits = ctypes.c_void_p()
             bitmap = gdi32.CreateDIBSection(screen, ctypes.byref(header), 0, ctypes.byref(bits), None, 0)
-            if not bitmap:
-                raise OSError("CreateDIBSection failed")
-            ctypes.memmove(bits, data, len(data))
-            old = gdi32.SelectObject(memory, bitmap)
-            rect = wt.RECT()
-            user32.GetWindowRect(hwnd, ctypes.byref(rect))
-            user32.UpdateLayeredWindow(hwnd, screen, ctypes.byref(wt.POINT(rect.left, rect.top)),
-                                       ctypes.byref(wt.SIZE(width, height)), memory, ctypes.byref(wt.POINT(0, 0)), 0,
-                                       ctypes.byref(BLENDFUNCTION(0, 0, 255, 1)), 2)
         finally:
-            if old:
-                gdi32.SelectObject(memory, old)
-            if bitmap:
-                gdi32.DeleteObject(bitmap)
-            gdi32.DeleteDC(memory)
             user32.ReleaseDC(None, screen)
+        if not bitmap:
+            gdi32.DeleteDC(memory)
+            raise OSError("CreateDIBSection failed")
+        dib.update(size=size, memory=memory, bitmap=bitmap, bits=bits, old=gdi32.SelectObject(memory, bitmap))
+
+    def push():
+        """Shows the DIB's current contents in the layered window."""
+        if not dib.get("memory"):
+            return
+        width, height = dib["size"]
+        rect = wt.RECT()
+        user32.GetWindowRect(view["hwnd"], ctypes.byref(rect))
+        screen = user32.GetDC(None)
+        try:
+            user32.UpdateLayeredWindow(view["hwnd"], screen, ctypes.byref(wt.POINT(rect.left, rect.top)),
+                                       ctypes.byref(wt.SIZE(width, height)), dib["memory"],
+                                       ctypes.byref(wt.POINT(0, 0)), 0, ctypes.byref(BLENDFUNCTION(0, 0, 255, 1)), 2)
+        finally:
+            user32.ReleaseDC(None, screen)
+
+    def present(frame):
+        """Pushes a straight-alpha frame to the layered window (premultiplied BGRA DIB)."""
+        ensure_dib(frame.size)
+        data = premultiplied_bgra(frame)
+        ctypes.memmove(dib["bits"], data, len(data))
+        push()
+
+    def present_patch(patch, x, y):
+        """Replaces one rectangle of the shown frame (the idle animation's moving region)."""
+        width = dib["size"][0]
+        data = premultiplied_bgra(patch)
+        row = patch.width * 4
+        base = dib["bits"].value
+        for r in range(patch.height):
+            ctypes.memmove(base + ((y + r) * width + x) * 4, data[r * row:(r + 1) * row], row)
+        push()
+
+    def bounds(*sprites):
+        """Union rectangle of sprites, clipped to the canvas."""
+        width, height = view["stage"].size
+        left = max(0, min(s.x for s in sprites))
+        top = max(0, min(s.y for s in sprites))
+        right = min(width, max(s.x + s.image.width for s in sprites))
+        bottom = min(height, max(s.y + s.image.height for s in sprites))
+        return left, top, max(left + 1, right), max(top + 1, bottom)
 
     def show(index, animate=True):
         stage = view["stage"]
         if index is None or not items:
+            view["prepared"] = None
             present(stage.podium.copy())
             return
-        figure, shadow, _ = stage.layers(items[index], load_image(index))
-        previous = view["layers"]
-        view["index"], view["layers"] = index, (figure, shadow)
+        prepared = stage.prepare(items[index], load_image(index))
+        figure, shadow = stage.sprites(prepared)
+        # Cross-fade from what is on screen: the animated frame while the pose is alive.
+        previous = view.get("live") or view["layers"]
+        view["live"] = None
+        view["index"], view["layers"], view["prepared"] = index, (figure, shadow), prepared
+        view["region"], view["idle_shadow"] = bounds(figure, shadow), None
         if animate and previous:
             view["anim"] = (time.perf_counter(), previous, (figure, shadow))
             user32.SetTimer(view["hwnd"], 1, 15, None)
@@ -449,6 +683,39 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
                 step(pending)
         else:
             present(view["stage"].frame([(old[0], old[1], 1 - eased), (new[0], new[1], eased)]))
+
+    def idle_tick():
+        """One idle-animation frame: only the rectangle around the figure and its shadow."""
+        prepared = view["prepared"]
+        if view["anim"] or not view["idle"] or view.get("locked") or prepared is None or not dib.get("memory"):
+            return
+        stage = view["stage"]
+        figure = stage.animate(prepared, time.perf_counter() - view["idle_start"])
+        view["idle_frame"] = view.get("idle_frame", 0) + 1
+        if view["idle_shadow"] is None or view["idle_frame"] % 2 == 0:  # the shadow moves slowly
+            view["idle_shadow"] = stage.cast_shadow(figure)
+        shadow = view["idle_shadow"]
+        now = bounds(figure, shadow)
+        last = view["region"]
+        left, top = min(now[0], last[0]), min(now[1], last[1])
+        right, bottom = max(now[2], last[2]), max(now[3], last[3])
+        patch = stage.podium.crop((left, top, right, bottom))
+        place(patch, shadow.image, shadow.x - left, shadow.y - top)
+        place(patch, figure.image, figure.x - left, figure.y - top)
+        present_patch(patch, left, top)
+        view["region"], view["live"] = now, (figure, shadow)
+
+    def set_idle(on):
+        view["idle"] = on
+        poses.save_view_prefs({"idle": on})  # shared with the PoseStage window
+        if on:
+            view["idle_start"] = time.perf_counter()
+            user32.SetTimer(view["hwnd"], 2, 1000 // IDLE_FPS, None)
+        else:
+            user32.KillTimer(view["hwnd"], 2)
+            if view["layers"]:
+                present(view["stage"].frame([(*view["layers"], 1)]))
+                view["region"] = bounds(*view["layers"])
 
     def resize_to(size_name):
         settings["size"] = size_name
@@ -485,6 +752,7 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
             add(0x8 if settings["size"] == name else 0, ident, f"Размер: {title}")
         add(0x8 if settings["on_top"] else 0, 20, "Поверх всех окон")
         add(0x8 if view["sizing"] == "body" else 0, 21, "Единый размер тела")
+        add(0x8 if view["idle"] else 0, 22, "Оживление позы")
         add(0x800, 0, None)
         add(0, 30, "Открыть окно PoseStage")
         add(0, 31, "Закрыть\tEsc")
@@ -504,6 +772,8 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
             resize_to(chosen)
         elif chosen == "on_top":
             set_on_top(not settings["on_top"])
+        elif chosen == "idle":
+            set_idle(not view["idle"])
         elif chosen == "sizing":
             view["sizing"] = "body" if view["sizing"] == "file" else "file"
             poses.save_view_prefs({"sizing": view["sizing"]})  # shared with the PoseStage window
@@ -547,8 +817,11 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
                 elif wparam == 0x1B:  # Esc
                     user32.DestroyWindow(hwnd)
                 return 0
-            if message == WM_TIMER and view["anim"]:
-                tick()
+            if message == WM_TIMER:
+                if wparam == 1 and view["anim"]:
+                    tick()
+                elif wparam == 2:
+                    idle_tick()
                 return 0
             if message == WM_EXITSIZEMOVE:
                 remember_position()
@@ -566,7 +839,15 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
                 user32.ShowWindow(hwnd, 5)
                 user32.SetForegroundWindow(hwnd)
                 return 0
+            if message == WM_WTSSESSION_CHANGE and wparam in (7, 8):  # session lock / unlock
+                view["locked"] = wparam == 7  # no animation frames while nobody can see them
+                return 0
             if message == WM_DESTROY:
+                try:
+                    ctypes.windll.wtsapi32.WTSUnRegisterSessionNotification(hwnd)
+                except (AttributeError, OSError):
+                    pass
+                release_dib()
                 user32.PostQuitMessage(0)
                 return 0
         except Exception:
@@ -598,6 +879,14 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
             resize_to(settings["size"])
         keep_on_screen()
     user32.ShowWindow(hwnd, 4)  # SW_SHOWNOACTIVATE
+    try:  # lock / unlock notifications pause the idle animation
+        ctypes.windll.wtsapi32.WTSRegisterSessionNotification.argtypes = [wt.HWND, wt.DWORD]
+        ctypes.windll.wtsapi32.WTSRegisterSessionNotification(hwnd, 0)  # NOTIFY_FOR_THIS_SESSION
+        ctypes.windll.wtsapi32.WTSUnRegisterSessionNotification.argtypes = [wt.HWND]
+    except (AttributeError, OSError):
+        logging.warning("Session notifications unavailable: the animation keeps running while locked")
+    if view["idle"]:
+        set_idle(True)
     logging.info("Desktop mode: %d poses, %d in rotation, size %s", len(items), len(cycle), settings["size"])
 
     message = wt.MSG()

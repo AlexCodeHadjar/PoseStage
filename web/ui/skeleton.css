@@ -1,0 +1,37 @@
+/* Skeleton editor (web/ui/skeleton.js). */
+.skeleton-layer { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 40; pointer-events: none; }
+.skeleton-layer .bone { stroke-width: 2.5; stroke-linecap: round; opacity: .85; }
+.skeleton-layer .bone.spine { stroke: #f2f2f2; }
+.skeleton-layer .bone.side-a { stroke: #4fd1e8; }
+.skeleton-layer .bone.side-b { stroke: #ffb04a; }
+.skeleton-layer .joint { pointer-events: all; cursor: grab; stroke: #16181b; stroke-width: 2.5; }
+.skeleton-layer .joint:active { cursor: grabbing; }
+.skeleton-layer .joint.spine { fill: #f2f2f2; }
+.skeleton-layer .joint.side-a { fill: #4fd1e8; }
+.skeleton-layer .joint.side-b { fill: #ffb04a; }
+.skeleton-layer .joint:hover { stroke: #fff; stroke-width: 3; }
+
+.skeleton-panel {
+  position: fixed; left: 50%; bottom: 70px; transform: translateX(-50%); z-index: 41;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  max-width: calc(100vw - 32px); padding: 12px 16px; border-radius: 14px;
+  color: #e6e7e9; font: 13px/1.4 "Segoe UI", sans-serif; text-align: center;
+  background: rgba(22, 24, 27, .72); border: 1px solid rgba(255, 255, 255, .12);
+  backdrop-filter: blur(14px);
+}
+.skeleton-title { font-weight: 600; }
+.skeleton-hint { color: #b9bbc0; font-size: 12px; }
+.skeleton-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 4px; }
+.skeleton-buttons button {
+  padding: 6px 14px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, .16);
+  color: #e6e7e9; background: rgba(255, 255, 255, .07); font: inherit; cursor: pointer;
+}
+.skeleton-buttons button:hover { background: rgba(255, 255, 255, .14); }
+.skeleton-buttons button.primary { background: rgba(79, 209, 232, .22); border-color: rgba(79, 209, 232, .5); }
+.skeleton-buttons button:disabled { opacity: .4; cursor: default; }
+.skeleton-toast {
+  position: fixed; left: 50%; bottom: 120px; transform: translateX(-50%); z-index: 42;
+  padding: 8px 14px; border-radius: 10px; color: #e6e7e9; font: 13px "Segoe UI", sans-serif;
+  background: rgba(22, 24, 27, .8); pointer-events: none;
+}
+body.skeleton-editing .artist-tools, body.skeleton-editing .nav-counter { opacity: .2; }

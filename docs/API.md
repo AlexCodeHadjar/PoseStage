@@ -25,6 +25,8 @@ type Pose = {
   area: number;         // площадь силуэта (альфа > 8), px исходника
   stature: number;      // оценка роста стоя, px исходника: reference·√area коллекции
   scale_adjust: number; // ручная поправка размера 0.5…2 (1 — без поправки)
+  joints: {nose: [x, y], shoulders: [[x, y], [x, y]], elbows: …, wrists: …, hips: …} | null;
+  joints_source: "user"|"bundled"|null;  // скелет для оживления (px исходника)
 }
 ```
 
@@ -56,6 +58,9 @@ type Pose = {
 (`placement.js: bodyScale`), и уменьшает позу только если иначе опоры не помещаются на крышку
 или фигура выходит за края экрана (`placement.limited`).
 
+- `set_joints(file: string, joints | null) -> Pose` — исправленный скелет позы (оживление); `null` —
+  вернуть найденный автоматически (`web/scene/pose_joints.json`). Хранится в `joint_overrides.json`
+  по коллекции; неверный формат — `ValueError`.
 - `set_pose_scale(file: string, factor: number) -> Pose` — ручная поправка 0.5…2, `1` удаляет её.
   Хранится в `scale_overrides.json` по коллекции. Иное значение — `ValueError`.
 
@@ -86,7 +91,7 @@ type Collection = {id: string; name: string; folder: string; active: boolean};
   Хранятся в `view_prefs.json`; бэкенд принимает только известные ключи с проверкой типов:
   `flip: bool, gray: bool, grid: "off"|"thirds"|"proportions", on_top: bool, compact: bool,
   filter: {mode: "all"|"feet"|"kneel"|"ground", favorites: bool, tag: string|null, search: string},
-  parallax: "off"|"soft"|"strong", sizing: "body"|"file", background: {mode: "studio"|"image", id: string|null, blur: 0…24, dim: 0…0.85}`.
+  parallax: "off"|"soft"|"strong", sizing: "body"|"file", idle: bool, background: {mode: "studio"|"image", id: string|null, blur: 0…24, dim: 0…0.85}`.
   `save_view_prefs` сливает частичный объект с сохранённым; `get_view_prefs` при первом
   запуске возвращает `{}` — значения по умолчанию задаёт фронтенд.
 
@@ -167,6 +172,9 @@ type App = {
     // опора только ставится в центр подиума; "body" — единый рост тела с ограничениями подиума.
     setSizing(mode: "body"|"file"): string;
     sizing(): string;
+    // Оживление позы (web/scene/idle.js): дыхание, перенос веса, голова; опоры неподвижны.
+    setIdle(on: boolean): boolean;
+    idle(): boolean;
     // Фон-изображение на плоскости за подиумом (настоящий параллакс); последний вызов побеждает.
     setBackground(state: {mode: "studio"|"image", url?: string, blur?: number, dim?: number}): Promise<object>;
     background(): object;
@@ -197,6 +205,8 @@ type App = {
 | P | параллакс: выкл → мягкий → сильный | художник |
 | W | подиум на рабочем столе (`open_desktop`) | художник |
 | M | масштаб поз: как в файле (по умолчанию) ↔ единый размер тела (`view.setSizing`) | художник |
+| Y | оживление позы (`view.setIdle`) | художник |
+| J | правка скелета (`set_joints`) | скелет |
 | G | галерея миниатюр | навигация |
 | S | избранное | навигация |
 | 1 / 2 / 3 / 0 | опора: стопы / колени / сидя-лёжа / авто | навигация |

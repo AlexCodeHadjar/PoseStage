@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 from collections import Counter
+from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import quote
@@ -204,6 +205,50 @@ def opaque(pose: dict) -> bool:
     return pose["area"] >= .98 * pose["w"] * pose["h"]
 
 
+JOINT_PAIRS = ("shoulders", "elbows", "wrists", "hips")  # [left, right] each; plus "nose"
+
+
+def valid_joints(joints, w=None, h=None) -> bool:
+    """{"nose": [x, y], "shoulders"/"elbows"/"wrists"/"hips": [[x, y], [x, y]]} in source px."""
+    if not isinstance(joints, dict):
+        return False
+    limit = 4 * max(w or 1, h or 1, 1024)
+
+    def point(value):
+        return (isinstance(value, list) and len(value) == 2
+                and all(type(n) in (int, float) and math.isfinite(n) and -limit <= n <= limit for n in value))
+    return point(joints.get("nose")) and all(
+        isinstance(joints.get(name), list) and len(joints[name]) == 2 and all(map(point, joints[name]))
+        for name in JOINT_PAIRS)
+
+
+def clean_joints(joints) -> dict:
+    """Only the known points, rounded to 0.1 px."""
+    pair = lambda value: [round(float(value[0]), 1), round(float(value[1]), 1)]
+    return {"nose": pair(joints["nose"]), **{name: [pair(v) for v in joints[name]] for name in JOINT_PAIRS}}
+
+
+@lru_cache(maxsize=1)
+def bundled_joints() -> dict:
+    """web/scene/pose_joints.json (tools/detect_joints.py): bare file name (casefold) -> joints."""
+    data = read_dict(RESOURCE_DIR / "web/scene/pose_joints.json").get("poses")
+    if not isinstance(data, dict):
+        return {}
+    return {k: clean_joints(v) for k, v in data.items() if isinstance(k, str) and valid_joints(v)}
+
+
+def with_joints(pose: dict, user: dict) -> dict:
+    """Skeleton for the idle animation: the user's correction > bundled detection (top-level
+    files only, like support modes) > none (the frontend then estimates one from the box)."""
+    if valid_joints(user.get(pose["file"]), pose["w"], pose["h"]):
+        joints, source = clean_joints(user[pose["file"]]), "user"
+    elif "/" not in pose["file"] and pose["file"].casefold() in bundled_joints():
+        joints, source = bundled_joints()[pose["file"].casefold()], "bundled"
+    else:
+        joints, source = None, None
+    return {**pose, "joints": joints, "joints_source": source}
+
+
 def with_body(pose: dict, reference: float, scales: dict) -> dict:
     """Adds the estimated standing height (source px) and the user's size correction.
     Opaque pictures have no body to measure: their box height stands in for it."""
@@ -374,6 +419,22 @@ def set_scale(cid: str, relative: str, factor: float):
     update_section("scale_overrides.json", cid, change)
 
 
+def read_joint_overrides(cid: str | None) -> dict:
+    return {k: v for k, v in read_section("joint_overrides.json", cid).items() if isinstance(k, str) and valid_joints(v)}
+
+
+def set_joint_override(cid: str, relative: str, joints):
+    """Stores the user's corrected skeleton; None removes it (back to the bundled one)."""
+    def change(section):
+        clean = {k: v for k, v in section.items() if isinstance(k, str) and valid_joints(v)}
+        clean.pop(relative, None)
+        if joints is not None:
+            clean[relative] = clean_joints(joints)
+        section.clear()
+        section.update(clean)
+    update_section("joint_overrides.json", cid, change)
+
+
 def normalize_tags(tags) -> list[str]:
     if not isinstance(tags, list):
         raise ValueError("tags must be a list of strings")
@@ -445,7 +506,7 @@ def write_state(cid: str, relative: str, index: int):
 
 
 VIEW_PREFS = {"flip": bool, "gray": bool, "on_top": bool, "compact": bool, "grid": ("off", "thirds", "proportions"),
-              "parallax": ("off", "soft", "strong"), "sizing": ("body", "file")}
+              "parallax": ("off", "soft", "strong"), "sizing": ("body", "file"), "idle": bool}
 FILTER_PREFS = {"mode": ("all", *MODES), "favorites": bool}
 
 
@@ -655,8 +716,8 @@ class PoseCatalog:
             allowed[relative] = path
         if entries != cached:
             write_json(DATA_DIR / "poses_cache.json", entries)
-        reference, scales = body_reference(items), read_scales(cid)
-        return [with_body(pose, reference, scales) for pose in items], allowed, reference
+        reference, scales, joints = body_reference(items), read_scales(cid), read_joint_overrides(cid)
+        return [with_joints(with_body(pose, reference, scales), joints) for pose in items], allowed, reference
 
     def get(self) -> list[dict]:
         self.ready.wait()
@@ -701,7 +762,7 @@ class PoseCatalog:
                 index = next(i for i, pose in enumerate(self.items) if pose["file"] == relative)
                 pose = make_pose(self.prefix, relative, self.items[index], read_overrides(cid), bundled_modes())
                 # The collection's reference stays as scanned, so other poses keep their size.
-                pose = with_body(pose, self.reference, read_scales(cid))
+                pose = with_joints(with_body(pose, self.reference, read_scales(cid)), read_joint_overrides(cid))
                 self.items = self.items[:index] + [pose] + self.items[index + 1:]
                 return pose
 
@@ -715,6 +776,21 @@ class PoseCatalog:
                 set_scale(cid, relative, float(factor))
                 index = next(i for i, pose in enumerate(self.items) if pose["file"] == relative)
                 pose = with_body(self.items[index], self.reference, read_scales(cid))
+                self.items = self.items[:index] + [pose] + self.items[index + 1:]
+                return pose
+
+    def set_joints(self, relative, joints) -> dict:
+        """The user's corrected skeleton (None: back to the bundled detection)."""
+        self.ready.wait()
+        with self._scan_lock:
+            with self.lock:
+                cid = self.require(relative, wait=False)
+                index = next(i for i, pose in enumerate(self.items) if pose["file"] == relative)
+                current = self.items[index]
+                if joints is not None and not valid_joints(joints, current["w"], current["h"]):
+                    raise ValueError("Skeleton must be {nose, shoulders, elbows, wrists, hips} in pixels")
+                set_joint_override(cid, relative, joints)
+                pose = with_joints(current, read_joint_overrides(cid))
                 self.items = self.items[:index] + [pose] + self.items[index + 1:]
                 return pose
 

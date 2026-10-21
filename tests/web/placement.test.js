@@ -8,6 +8,7 @@ import { FIXTURE_POSES } from './fixtures.js';
 import { frameCamera } from '../../web/scene/stage.js';
 import { groundMapping, fitPlacement, bodyScale, STATURE_SHARE, SUPPORT_RADIUS, setSizing, FILE_FIGURE_SHARE } from '../../web/scene/placement.js';
 import { Figure } from '../../web/scene/figure.js';
+import { createRig, estimateJoints, IDLE_LOOP } from '../../web/scene/idle.js';
 import { TextureCache } from '../../web/scene/textures.js';
 import { stepTarget, normalizeOrder, edgeTarget } from '../../web/core/navigation.js';
 import { ViewState } from '../../web/core/view.js';
@@ -70,6 +71,52 @@ test('file sizing (default): one scale for every picture, support centred, no li
   } finally {
     setSizing('file');
   }
+});
+
+// --- Idle animation ------------------------------------------------------------
+
+// desktop.py IdleRig values for FIXTURE_POSES[1] (estimated skeleton): [x, y, t, dx, dy].
+const PYTHON_IDLE = [
+  [512.0, 160.0, 0.7, 7.623912194, -7.046659252],
+  [512.0, 160.0, 2.9, -1.244344972, -2.917759503],
+  [512.0, 380.0, 0.7, 1.926889374, -3.671811688],
+  [512.0, 380.0, 2.9, 0.301020104, -1.463435963],
+  [436.4, 336.0, 0.7, 2.577241112, -7.204474511],
+  [436.4, 336.0, 2.9, 0.401556717, -2.602251325],
+];
+
+test('idle rig matches desktop.py, loops seamlessly and pins the supports', () => {
+  const pose = FIXTURE_POSES[1];
+  const rig = createRig(pose);
+  for (const [x, y, t, dx, dy] of PYTHON_IDLE) {
+    const [jx, jy] = rig.displace(x, y, t);
+    near(jx, dx, 1e-6, `dx at ${x},${y},${t}`);
+    near(jy, dy, 1e-6, `dy at ${x},${y},${t}`);
+    const [lx, ly] = rig.displace(x, y, t + IDLE_LOOP);
+    near(lx, jx, 1e-9, 'loop x');
+    near(ly, jy, 1e-9, 'loop y');
+  }
+  for (const [x, y] of pose.support.profile.filter((point) => point[1] >= pose.box[1] + 0.93 * (pose.box[3] - pose.box[1]))) {
+    deepEqual(rig.displace(x, y, 1.3), [0, 0], `support ${x},${y} pinned`);
+  }
+  const joints = estimateJoints(pose);
+  assert(joints.nose[1] < joints.shoulders[0][1] && joints.shoulders[0][1] < joints.hips[0][1], 'estimated order');
+});
+
+test('Figure.animate bends the drawing and restores it', () => {
+  const camera = makeCamera(frameCamera, 1280, 720).camera;
+  const scene = new THREE.Scene();
+  const figure = new Figure(FIXTURE_POSES[1], new THREE.Texture(), scene, scene);
+  figure.fit(camera);
+  const still = Array.from(figure.geometry.attributes.position.array);
+  const stillShadow = Array.from(figure.shadowGeometry.attributes.position.array);
+  figure.animate(camera, 0.7);
+  const moved = Array.from(figure.geometry.attributes.position.array);
+  assert(moved.some((value, i) => Math.abs(value - still[i]) > 1e-4), 'drawing moved');
+  assert(Array.from(figure.shadowGeometry.attributes.position.array).some((value, i) => Math.abs(value - stillShadow[i]) > 1e-6), 'shadow moved');
+  figure.animate(camera, null);
+  deepEqual(Array.from(figure.geometry.attributes.position.array), still, 'restored');
+  figure.dispose();
 });
 
 test('limits: contacts on the podium, figure inside the screen margins', () => {
@@ -483,6 +530,8 @@ test('integration: view zoom/pan keeps placement, figureRect follows', async () 
   const { app, win } = harness;
   // A pending window resize (e.g. the browser pane opening) must reach the app first,
   // otherwise innerWidth and the app's viewport disagree for a moment.
+  // A hidden browser pane may never deliver it: send one ourselves.
+  win.dispatchEvent(new win.Event('resize'));
   await waitFor(() => win.__poseStage.canvas[0] === Math.floor(win.innerWidth * Math.min(win.devicePixelRatio, 2)),
     5000, 'viewport settled');
   const scale = win.__poseStage.pixelScale;

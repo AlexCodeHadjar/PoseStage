@@ -18,6 +18,7 @@ const FAST_SPEED = 8; // transition speed-up while more steps are queued
 const UI_MODULES = [
   ['artist', './ui/artist.js'],
   ['navigator', './ui/navigator.js'],
+  ['skeleton', './ui/skeleton.js'],
 ];
 
 const canvas = document.querySelector('#stage');
@@ -565,6 +566,11 @@ function renderFrame(now) {
 
   current?.face(camera);
   transition?.next.face(camera);
+  if (idleOn) {
+    // Idle animation: breathing, weight shift and head motion; the cast shadow follows.
+    for (const figure of [current, transition?.old, transition?.next]) figure?.animate(camera, now / 1000);
+    renderer.shadowMap.needsUpdate = true;
+  }
   if (camera.position.distanceToSquared(lastShadowCamera) > Math.pow(framing.distance * 0.0003, 2)) {
     renderer.shadowMap.needsUpdate = true;
     lastShadowCamera.copy(camera.position);
@@ -632,6 +638,35 @@ function draw(now) {
   frameId = requestAnimationFrame(draw);
 }
 
+// --- Idle animation --------------------------------------------------------
+let idleOn = false;
+let idleFrameId = 0;
+let idleLast = 0;
+
+// While the window is unfocused the main loop pauses; the idle animation keeps going at
+// ~20 fps (enough for slow breathing) so the pose stays alive next to the drawing program.
+function idleTick(now) {
+  idleFrameId = 0;
+  if (active || !idleOn || document.hidden || !framing) return;
+  if (now - idleLast >= 48) {
+    idleLast = now;
+    renderFrame(now);
+  }
+  idleFrameId = requestAnimationFrame(idleTick);
+}
+
+function setIdle(on) {
+  idleOn = !!on;
+  if (!idleOn) {
+    for (const figure of [current, transition?.old, transition?.next]) figure?.animate(camera, null);
+    renderer.shadowMap.needsUpdate = true;
+    invalidate();
+  } else if (!active && !idleFrameId) {
+    idleFrameId = requestAnimationFrame(idleTick);
+  }
+  return idleOn;
+}
+
 // While the loop is paused (window blurred), still show view/pose changes once.
 function invalidate() {
   if (active || stillFrameId || !renderer || !framing) {
@@ -663,6 +698,7 @@ function pause() {
   pendingSteps = 0;
   finish();
   lastFrame = 0;
+  if (idleOn && !idleFrameId) idleFrameId = requestAnimationFrame(idleTick);
 }
 
 // --- Background: the studio or a picture behind the podium ----------------
@@ -771,6 +807,9 @@ const app = {
       return after;
     },
     sizing: () => getSizing(),
+    // Idle animation (breathing loop) on/off; returns the state in effect.
+    setIdle: (on) => setIdle(on),
+    idle: () => idleOn,
     setBackground: (options) => setBackground(options),
     background: () => ({ ...background }),
     onFrame(callback) {
@@ -964,6 +1003,8 @@ document.addEventListener('visibilitychange', () => {
     pause();
   } else if (document.hasFocus()) {
     resume();
+  } else if (idleOn && !idleFrameId) {
+    idleFrameId = requestAnimationFrame(idleTick); // restored without focus: keep the pose alive
   }
 });
 window.addEventListener('contextmenu', (event) => event.preventDefault());
@@ -998,6 +1039,8 @@ Object.defineProperty(window, '__poseStage', {
     stature: current?.pose.stature ?? null,
     scaleAdjust: current?.pose.scale_adjust ?? 1,
     sizeLimited: current?.placement?.limited ?? false,
+    idle: idleOn,
+    joints: current?.pose.joints_source ?? null,
     figures: overlay ? overlay.children.length : 0,
     supportCenter: current?.placement ? [current.placement.mapping.centerX, current.placement.mapping.centerY] : null,
     podiumTop: 0.4,

@@ -245,6 +245,10 @@ class Api:
     def set_support_mode(self, file, mode):
         return self._catalog.set_mode(file, mode)
 
+    def set_joints(self, file, joints=None):
+        """The user's corrected skeleton for the idle animation; None restores the bundled one."""
+        return self._catalog.set_joints(file, joints)
+
     def set_pose_scale(self, file, factor):
         """User's size correction of one pose (0.5…2, 1 removes it); returns the updated Pose."""
         return self._catalog.set_scale(file, factor)
