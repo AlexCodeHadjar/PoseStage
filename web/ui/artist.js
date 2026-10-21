@@ -917,6 +917,14 @@ export function install(app) {
     { keys: ['KeyZ'], title: 'Сбросить масштаб и панораму', handler: once(() => resetZoom()) },
     { keys: ['KeyT'], title: 'Поверх всех окон', handler: once(() => toggleOnTop().catch(report)) },
     { keys: ['KeyC'], title: 'Компактное окно (поверх всех)', handler: once(() => toggleCompact().catch(report)) },
+    {
+      keys: ['KeyW'],
+      title: 'Подиум на рабочем столе, без окна',
+      handler: once(() => {
+        showToast('Подиум на рабочем столе…');
+        call('open_desktop').catch(report);
+      }),
+    },
   ];
   for (const definition of shortcuts) {
     app.shortcuts.register({ ...definition, group: GROUP });

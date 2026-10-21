@@ -103,6 +103,8 @@ type Collection = {id: string; name: string; folder: string; active: boolean};
 
 - `toggle_fullscreen()`, `quit()`, `report_error(message)` — как раньше.
 - `set_on_top(on: bool) -> bool` — окно поверх всех.
+- `open_desktop() -> bool` — запускает `PoseStage --desktop` (подиум без окна, `desktop.py`) и закрывает
+  окно; без окна — `false`. Настройки режима: `desktop.json` `{size: "small"|"medium"|"large", on_top, x, y}`.
 - `set_compact(on: bool) -> bool` — компактный режим: выход из полного экрана, окно ~ 480×720
   у правого края рабочей области, поверх всех. `false` — возврат в полный экран.
 - Перетаскивание frameless-окна: элементы с CSS-классом `pywebview-drag-region`.
@@ -189,6 +191,7 @@ type App = {
 | C | компактное окно | художник |
 | B | фон: студия / изображение, размытие, затемнение | художник |
 | P | параллакс: выкл → мягкий → сильный | художник |
+| W | подиум на рабочем столе (`open_desktop`) | художник |
 | G | галерея миниатюр | навигация |
 | S | избранное | навигация |
 | 1 / 2 / 3 / 0 | опора: стопы / колени / сидя-лёжа / авто | навигация |

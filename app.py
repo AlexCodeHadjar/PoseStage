@@ -468,6 +468,19 @@ class Api:
         if self._window:
             self._window.destroy()
 
+    def open_desktop(self):
+        """Desktop mode: starts `PoseStage --desktop` (podium without a window) and closes this one."""
+        if not self._window:
+            return False
+        import desktop
+        try:
+            desktop.launch(["--desktop"])
+        except OSError:
+            logging.exception("Cannot start desktop mode")
+            return False
+        self.quit()
+        return True
+
     def report_error(self, message):
         logging.error("Frontend: %s", str(message)[:4000])
 
@@ -559,6 +572,18 @@ def create_app(*, hidden=False, fullscreen=True):
 
 
 def main():
+    if "--desktop" in sys.argv:
+        setup_logging()
+        import desktop
+        try:
+            return desktop.run(RESOURCE_DIR, EXE_DIR if getattr(sys, "frozen", False) else None)
+        except Exception:
+            logging.exception("Desktop mode failed")
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None,
+                "Не удалось показать подиум на рабочем столе. Откройте PoseStage обычным способом.\n"
+                f"Подробности: {DATA_DIR / 'log.txt'}", "PoseStage", 0x10)
+            return 1
     if "--self-check" in sys.argv:
         setup_logging()
         from diagnostics import self_check

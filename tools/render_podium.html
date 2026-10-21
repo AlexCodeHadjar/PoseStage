@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>PoseStage — рендер подиума для режима рабочего стола</title>
+  <script type="importmap">{"imports":{"three":"../web/vendor/three/build/three.module.js","three/addons/":"../web/vendor/three/examples/jsm/"}}</script>
+  <style>body { margin: 0; background: repeating-conic-gradient(#ccc 0 25%, #fff 0 50%) 0 0 / 24px 24px; }</style>
+</head>
+<body>
+  <!-- Run python tools/render_podium.py and open the printed URL: the page renders the
+       podium and posts web/desktop/podium.{png,json} back to that server. -->
+  <canvas id="c"></canvas>
+  <script type="module" src="./render_podium.js"></script>
+</body>
+</html>

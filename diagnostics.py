@@ -84,7 +84,8 @@ def self_check(resources: Path, executable_dir: Path):
             if hashlib.sha256((vendor / name).read_bytes()).hexdigest() != expected:
                 raise ValueError(f'Bundled file checksum mismatch: {name}')
         for name in ('index.html', 'style.css', 'main.js', 'scene/figure.js', 'scene/placement.js',
-                     'scene/pose_support_modes.json', 'shaders/dissolve.js'):
+                     'scene/pose_support_modes.json', 'shaders/dissolve.js',
+                     'desktop/podium.png', 'desktop/podium.json'):
             if not (resources / 'web' / name).is_file():
                 raise FileNotFoundError(name)
         report['vendor_files_verified'] = len(manifest['sha256'])
