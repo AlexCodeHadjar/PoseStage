@@ -86,7 +86,7 @@ type Collection = {id: string; name: string; folder: string; active: boolean};
   Хранятся в `view_prefs.json`; бэкенд принимает только известные ключи с проверкой типов:
   `flip: bool, gray: bool, grid: "off"|"thirds"|"proportions", on_top: bool, compact: bool,
   filter: {mode: "all"|"feet"|"kneel"|"ground", favorites: bool, tag: string|null, search: string},
-  parallax: "off"|"soft"|"strong", background: {mode: "studio"|"image", id: string|null, blur: 0…24, dim: 0…0.85}`.
+  parallax: "off"|"soft"|"strong", sizing: "body"|"file", background: {mode: "studio"|"image", id: string|null, blur: 0…24, dim: 0…0.85}`.
   `save_view_prefs` сливает частичный объект с сохранённым; `get_view_prefs` при первом
   запуске возвращает `{}` — значения по умолчанию задаёт фронтенд.
 
@@ -163,6 +163,10 @@ type App = {
     // Камера облетает подиум за курсором: off — без параллакса, soft — ±4°, strong — ±9,5° / ±3,5°.
     setParallax(mode: "off"|"soft"|"strong"): string;
     parallax(): string;
+    // Размер поз: "body" — единый рост тела с ограничениями подиума; "file" — эксперимент: один
+    // масштаб для всех картинок (рисунок как в файле), опора только ставится в центр подиума.
+    setSizing(mode: "body"|"file"): string;
+    sizing(): string;
     // Фон-изображение на плоскости за подиумом (настоящий параллакс); последний вызов побеждает.
     setBackground(state: {mode: "studio"|"image", url?: string, blur?: number, dim?: number}): Promise<object>;
     background(): object;
@@ -192,6 +196,7 @@ type App = {
 | B | фон: студия / изображение, размытие, затемнение | художник |
 | P | параллакс: выкл → мягкий → сильный | художник |
 | W | подиум на рабочем столе (`open_desktop`) | художник |
+| M | масштаб поз: тело ↔ как в файле (`view.setSizing`) | художник |
 | G | галерея миниатюр | навигация |
 | S | избранное | навигация |
 | 1 / 2 / 3 / 0 | опора: стопы / колени / сидя-лёжа / авто | навигация |

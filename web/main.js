@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { createStage, frameCamera, orbitCamera } from './scene/stage.js';
 import { createPost } from './scene/post.js';
 import { Figure } from './scene/figure.js';
+import { setSizing, getSizing } from './scene/placement.js';
 import { TextureCache } from './scene/textures.js';
 import { createEmitter } from './core/events.js';
 import { normalizeOrder, stepTarget, edgeTarget } from './core/navigation.js';
@@ -756,6 +757,20 @@ const app = {
       return parallaxMode;
     },
     parallax: () => parallaxMode,
+    // Pose sizing "body" (one body size, placement limits) | "file" (as drawn, centred only).
+    setSizing(mode) {
+      const before = getSizing();
+      const after = setSizing(mode);
+      if (after !== before) {
+        for (const figure of [current, transition?.old, transition?.next]) {
+          if (figure) figure.placement = null; // refit with the new rule on the next frame
+        }
+        renderer.shadowMap.needsUpdate = true;
+        invalidate();
+      }
+      return after;
+    },
+    sizing: () => getSizing(),
     setBackground: (options) => setBackground(options),
     background: () => ({ ...background }),
     onFrame(callback) {

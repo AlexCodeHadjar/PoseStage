@@ -36,6 +36,7 @@ export function install(app) {
     on_top: false,
     compact: false,
     parallax: 'soft',
+    sizing: 'body',
     background: { mode: 'studio', id: null, blur: 0, dim: 0 },
   };
   let backgrounds = []; // [{id, url, w, h}]: copies in %APPDATA%\PoseStage\backgrounds
@@ -555,6 +556,21 @@ export function install(app) {
     showToast(`Параллакс: ${PARALLAX_NAMES[state.parallax]}`);
   }
 
+  // --- 4a. Pose sizing: one body size, or exactly as drawn in the files (experiment) -
+  function applySizing() {
+    if (typeof app.view.setSizing === 'function') state.sizing = app.view.setSizing(state.sizing);
+  }
+
+  function toggleSizing() {
+    touched.add('sizing');
+    state.sizing = state.sizing === 'file' ? 'body' : 'file';
+    applySizing();
+    save({ sizing: state.sizing });
+    showToast(state.sizing === 'file'
+      ? 'Масштаб: как в файле (эксперимент) — только по центру подиума'
+      : 'Масштаб: единый размер тела');
+  }
+
   // --- 4b. Background: studio or a stored picture (glass popover) ------------
   const panel = document.createElement('div');
   panel.className = 'artist-bg';
@@ -912,6 +928,7 @@ export function install(app) {
     { keys: ['KeyL'], title: 'Сетка: выкл → трети → пропорции (8 голов)', handler: once(cycleGrid) },
     { keys: ['KeyB'], title: 'Фон: студия или изображение', handler: once(togglePanel) },
     { keys: ['KeyP'], title: 'Параллакс: выкл → мягкий → сильный', handler: once(cycleParallax) },
+    { keys: ['KeyM'], title: 'Масштаб поз: единый размер тела ↔ как в файле (эксперимент)', handler: once(toggleSizing) },
     { keys: ['Equal', 'Shift+Equal', 'NumpadAdd'], title: 'Приблизить', handler: () => zoomBy(KEY_STEP, centerX(), centerY()) },
     { keys: ['Minus', 'NumpadSubtract'], title: 'Отдалить', handler: () => zoomBy(1 / KEY_STEP, centerX(), centerY()) },
     { keys: ['KeyZ'], title: 'Сбросить масштаб и панораму', handler: once(() => resetZoom()) },
@@ -999,6 +1016,8 @@ export function install(app) {
     }
     if (!touched.has('parallax') && PARALLAX_MODES.includes(prefs.parallax)) state.parallax = prefs.parallax;
     setParallax(state.parallax);
+    if (!touched.has('sizing') && (prefs.sizing === 'body' || prefs.sizing === 'file')) state.sizing = prefs.sizing;
+    applySizing();
     const bg = prefs.background;
     if (!touched.has('background') && bg && typeof bg === 'object') {
       if (bg.mode === 'studio' || bg.mode === 'image') state.background.mode = bg.mode;

@@ -445,7 +445,7 @@ def write_state(cid: str, relative: str, index: int):
 
 
 VIEW_PREFS = {"flip": bool, "gray": bool, "on_top": bool, "compact": bool, "grid": ("off", "thirds", "proportions"),
-              "parallax": ("off", "soft", "strong")}
+              "parallax": ("off", "soft", "strong"), "sizing": ("body", "file")}
 FILTER_PREFS = {"mode": ("all", *MODES), "favorites": bool}
 
 

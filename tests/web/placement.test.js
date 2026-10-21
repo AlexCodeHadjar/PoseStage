@@ -6,7 +6,7 @@ import { makeCamera, VIEWPORTS, CAMERA_SHIFTS } from './measure.js';
 import { FIXTURE_POSES } from './fixtures.js';
 
 import { frameCamera } from '../../web/scene/stage.js';
-import { groundMapping, fitPlacement, bodyScale, STATURE_SHARE, SUPPORT_RADIUS } from '../../web/scene/placement.js';
+import { groundMapping, fitPlacement, bodyScale, STATURE_SHARE, SUPPORT_RADIUS, setSizing, FILE_FIGURE_SHARE } from '../../web/scene/placement.js';
 import { Figure } from '../../web/scene/figure.js';
 import { TextureCache } from '../../web/scene/textures.js';
 import { stepTarget, normalizeOrder, edgeTarget } from '../../web/core/navigation.js';
@@ -44,6 +44,21 @@ test('scale_adjust multiplies the size; no stature falls back to the box height'
   near(bodyScale(bare, mapping), (STATURE_SHARE * 1080) / (bare.box[3] - bare.box[1]), 1e-12, 'fallback');
   const smaller = fitPlacement({ ...pose, scale_adjust: 0.8 }, mapping);
   near(smaller.scale, fitPlacement(pose, mapping).scale * 0.8, 1e-9, 'smaller pose keeps the ratio');
+});
+
+test('file sizing: one scale for every picture, support centred, no limits', () => {
+  const mapping = groundMapping(makeCamera(frameCamera, 1920, 1080).camera);
+  try {
+    setSizing('file');
+    for (const pose of BODY_POSES) {
+      const p = fitPlacement({ ...pose, scale_adjust: 1.4 }, mapping);
+      near(p.scale, (STATURE_SHARE * 1080) / (FILE_FIGURE_SHARE * pose.h), 1e-12, `${pose.file} scale`);
+      equal(p.limited, false);
+      near(p.x, mapping.centerX + ((pose.box[0] + pose.box[2]) / 2 - p.cx) * p.scale, 1e-9, 'support centred');
+    }
+  } finally {
+    setSizing('body');
+  }
 });
 
 test('limits: contacts on the podium, figure inside the screen margins', () => {

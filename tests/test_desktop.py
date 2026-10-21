@@ -55,6 +55,17 @@ class GeometryTests(unittest.TestCase):
                                        self.meta['centerY'] + (cy - y) * p['scale'])
             self.assertLessEqual(math.hypot(gx, gz), self.meta['supportRadius'] + 1e-9)
 
+    def test_file_sizing_keeps_every_picture_at_one_scale(self):
+        scales = {desktop.fit_placement(pose(stature=s, adjust=a, box=b), self.meta, 'file')['scale']
+                  for s, a, b in ((600, 1, (100, 100, 300, 900)), (900, 1.3, (0, 700, 2000, 900)))}
+        self.assertEqual(len(scales), 1)  # no body estimate, no correction, no limits
+        expected = desktop.BODY_TO_PODIUM * self.meta['diameter'] / (desktop.FILE_FIGURE_SHARE * 1000)
+        self.assertAlmostEqual(scales.pop(), expected, places=9)
+        p = desktop.fit_placement(pose(), self.meta, 'file')
+        _, cx, cy = desktop.support_data(pose())
+        self.assertAlmostEqual(p['x'], self.meta['centerX'] + (200 - cx) * p['scale'], places=9)  # support centred
+        self.assertFalse(p['limited'])
+
     def test_shadow_falls_back_and_right(self):
         dx, dy = desktop.shadow_step(self.meta)
         self.assertGreater(dx, 0)  # key light from the left

@@ -28,6 +28,9 @@ DEFAULT_SIZE = "medium"
 # Standing body height / podium diameter, as in the window at 1920×1080 (0.61·1080 / 930.6 px),
 # so poses look the same size relative to the podium in both modes.
 BODY_TO_PODIUM = 0.708
+# Experimental "file" sizing (placement.js FILE_FIGURE_SHARE): one scale for every picture,
+# as drawn in its file, only centred on the podium.
+FILE_FIGURE_SHARE = 0.86
 TRANSITION_S = 0.28
 SHADOW_OPACITY = 0.36
 SHADOW_BLUR = 3.5  # px at the podium's native 1400 px height
@@ -64,11 +67,15 @@ def support_data(pose):
     return contacts, (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
 
 
-def fit_placement(pose, meta):
+def fit_placement(pose, meta, sizing="body"):
     """Scale (canvas px per source px) and bbox centre (px from the canvas centre, y up)."""
     x1, y1, x2, y2 = pose["box"]
     width, height = meta["width"], meta["height"]
     contacts, cx, cy = support_data(pose)
+    if sizing == "file":
+        scale = BODY_TO_PODIUM * meta["diameter"] / (FILE_FIGURE_SHARE * pose["h"])
+        return {"scale": scale, "limited": False, "cx": cx, "cy": cy,
+                "x": meta["centerX"] + ((x1 + x2) / 2 - cx) * scale, "y": meta["centerY"] + (cy - (y1 + y2) / 2) * scale}
     stature = pose.get("stature") or (y2 - y1)
     adjust = pose.get("scale_adjust") or 1
     desired = BODY_TO_PODIUM * meta["diameter"] / stature * adjust
@@ -137,8 +144,9 @@ def order(items, prefs, library):
 class Stage:
     """Podium sprite plus pose layers at one window size."""
 
-    def __init__(self, folder: Path, height: int):
+    def __init__(self, folder: Path, height: int, sizing: str = "body"):
         self.meta = load_meta(folder)
+        self.sizing = sizing
         self.k = height / self.meta["height"]
         size = (round(self.meta["width"] * self.k), height)
         self.podium = Image.open(folder / "podium.png").convert("RGBA").resize(size, Image.LANCZOS)
@@ -150,7 +158,7 @@ class Stage:
 
     def layers(self, pose, image):
         """(figure layer, shadow layer) as full-size RGBA images, plus the placement."""
-        p = fit_placement(pose, self.meta)
+        p = fit_placement(pose, self.meta, self.sizing)
         x1, y1, x2, y2 = pose["box"]
         k, w, h = self.k, self.meta["width"], self.meta["height"]
         size = (max(1, round((x2 - x1) * p["scale"] * k)), max(1, round((y2 - y1) * p["scale"] * k)))
@@ -314,9 +322,11 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
     WM_NCLBUTTONDBLCLK, WM_NCRBUTTONUP, WM_EXITSIZEMOVE, WM_DPICHANGED = 0xA3, 0xA5, 0x232, 0x2E0
     WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_SHOW_AGAIN = 0x7B, 0x7E, 0x8000 + 1  # WM_APP + 1
     HTCAPTION, HWND_TOPMOST, HWND_NOTOPMOST = 2, wt.HWND(-1), wt.HWND(-2)
-    MENU = {1: "next", 2: "prev", 10: "small", 11: "medium", 12: "large", 20: "on_top", 30: "window", 31: "close"}
+    MENU = {1: "next", 2: "prev", 10: "small", 11: "medium", 12: "large", 20: "on_top", 21: "sizing",
+            30: "window", 31: "close"}
 
-    view = {"stage": None, "index": None, "layers": None, "anim": None, "frame": None, "hwnd": None}
+    view = {"stage": None, "index": None, "layers": None, "anim": None, "frame": None, "hwnd": None,
+            "sizing": prefs.get("sizing") if prefs.get("sizing") in ("body", "file") else "body"}
     cache: dict[str, Image.Image] = {}
     lock = threading.Lock()
 
@@ -350,7 +360,7 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
         if view["hwnd"]:
             left, top, right, bottom = app.work_area(view["hwnd"])
             height = min(height, bottom - top)
-        view["stage"] = Stage(resource_dir / "web" / "desktop", height)
+        view["stage"] = Stage(resource_dir / "web" / "desktop", height, view.get("sizing", "body"))
 
     def keep_on_screen():
         """Moves the podium fully into the nearest monitor's work area (after monitor changes, or
@@ -474,6 +484,7 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
         for ident, name, title in ((10, "small", "Маленький"), (11, "medium", "Средний"), (12, "large", "Большой")):
             add(0x8 if settings["size"] == name else 0, ident, f"Размер: {title}")
         add(0x8 if settings["on_top"] else 0, 20, "Поверх всех окон")
+        add(0x8 if view["sizing"] == "file" else 0, 21, "Масштаб как в файле (эксперимент)")
         add(0x800, 0, None)
         add(0, 30, "Открыть окно PoseStage")
         add(0, 31, "Закрыть\tEsc")
@@ -493,6 +504,10 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
             resize_to(chosen)
         elif chosen == "on_top":
             set_on_top(not settings["on_top"])
+        elif chosen == "sizing":
+            view["sizing"] = "body" if view["sizing"] == "file" else "file"
+            poses.save_view_prefs({"sizing": view["sizing"]})  # shared with the PoseStage window
+            resize_to(settings["size"])
         elif chosen == "window":
             open_window()
         elif chosen == "close":

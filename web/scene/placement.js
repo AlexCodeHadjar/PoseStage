@@ -127,9 +127,46 @@ export function bodyScale(pose, mapping) {
   return ((STATURE_SHARE * mapping.height) / stature) * adjust;
 }
 
+// Experimental "file" sizing: every picture gets the same scale, exactly as drawn in its file,
+// with only its support centred on the podium (no body estimate, no correction, no limits).
+// A standing figure fills about this share of its PNG's height in the bundled set, so it keeps
+// the size it has in "body" sizing.
+export const FILE_FIGURE_SHARE = 0.86;
+let sizing = 'body';
+
+export function setSizing(mode) {
+  if (mode === 'body' || mode === 'file') sizing = mode;
+  return sizing;
+}
+
+export function getSizing() {
+  return sizing;
+}
+
 export function fitPlacement(pose, mapping) {
   const [x1, y1, x2, y2] = pose.box;
   const { threshold, contacts, cx, cy } = supportData(pose);
+
+  if (sizing === 'file') {
+    const scale = (STATURE_SHARE * mapping.height) / (FILE_FIGURE_SHARE * pose.h);
+    const radius = Math.max(...contacts.map(([x, y]) => {
+      const point = toGround(mapping, mapping.centerX + (x - cx) * scale, mapping.centerY + (cy - y) * scale);
+      return Math.hypot(point.x, point.z);
+    }));
+    return {
+      scale,
+      desired: scale,
+      limited: false,
+      cx,
+      cy,
+      threshold,
+      contacts,
+      maxContactRadius: radius,
+      mapping,
+      x: mapping.centerX + ((x1 + x2) / 2 - cx) * scale,
+      y: mapping.centerY + (cy - (y1 + y2) / 2) * scale,
+    };
+  }
 
   // The same body size for all poses; shrink a pose only if it cannot fit otherwise:
   // keep it inside 42% of the viewport width either side of the podium axis (arms may
