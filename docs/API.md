@@ -93,7 +93,7 @@ type App = {
   poses(): Pose[];                   // текущий список (копия)
   index(): number;
   current(): Pose | null;
-  goTo(index: number): void;         // переход с анимацией (или мгновенно при далёком прыжке)
+  goTo(index: number): void;         // переход всегда с одной анимацией, даже при далёком прыжке
   step(delta: number): void;         // ±N; быстрые нажатия накапливаются
   reload(poses: Pose[], index?: number): Promise<void>; // новый список (смена коллекции)
   updatePose(index: number, pose: Pose): void;  // заменить данные позы и переразместить

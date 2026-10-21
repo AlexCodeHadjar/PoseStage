@@ -73,12 +73,13 @@ class BackendTests(unittest.TestCase):
     def test_state_clamping_and_private_api(self):
         api = app.Api(self.catalog())
         self.assertTrue(all(name.startswith('_') or callable(getattr(api, name)) for name in vars(api)))
+        expected = {'index': 0, 'file': self.name}
         api.save_state(0)
-        self.assertEqual(api.get_state(), {'index': 0})
+        self.assertEqual(api.get_state(), expected)
         poses.write_json(poses.DATA_DIR / 'state.json', {'index': 200})
-        self.assertEqual(api.get_state(), {'index': 0})
+        self.assertEqual(api.get_state(), expected)
         (poses.DATA_DIR / 'state.json').write_text('broken', encoding='utf-8')
-        self.assertEqual(api.get_state(), {'index': 0})
+        self.assertEqual(api.get_state(), expected)
 
     def test_server_allowlist_and_traversal(self):
         server = app.LocalServer(self.catalog())

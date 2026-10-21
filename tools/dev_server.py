@@ -4,8 +4,10 @@ Usage:  python tools/dev_server.py [--folder PATH]
 Open the printed URL, then run in the page console (or javascript_tool):
     await import(location.pathname.replace(/web\\/index\\.html$/, '__shim.js'))
 The shim defines window.pywebview.api (each call is POST <prefix>/__api/<method>) and
-dispatches `pywebviewready`. Window-only methods (fullscreen, on-top, dialogs) are no-ops.
-Never shipped: build.bat bundles only web/.
+dispatches `pywebviewready`. /poses/ and /thumbs/ work as in the app. Window-only methods
+(fullscreen, on-top, compact, folder dialog) are harmless no-ops. Without --folder the active
+collection from %APPDATA%\\PoseStage\\config.json is used; set APPDATA to a temp dir to keep the
+real settings untouched. --folder is not saved as a collection. Never shipped: build.bat bundles only web/.
 """
 from __future__ import annotations
 
@@ -24,7 +26,8 @@ import poses  # noqa: E402
 SHIM = """
 const prefix = location.pathname.replace(/\\/web\\/index\\.html$/, '');
 const call = name => async (...args) => {
-  const response = await fetch(`${prefix}/__api/${name}`, {method: 'POST', body: JSON.stringify(args)});
+  const response = await fetch(`${prefix}/__api/${name}`,
+    {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(args)});
   if (!response.ok) throw new Error(`${name}: HTTP ${response.status} ${await response.text()}`);
   return response.json();
 };
@@ -36,7 +39,7 @@ window.dispatchEvent(new Event('focus'));
 
 class DevHandler(app.Handler):
     def do_GET(self):
-        if self.path == self.server.catalog.prefix + "/__shim.js":
+        if self.path == self.server.catalog.prefix + "/__shim.js" and self.host_allowed():
             body = SHIM.encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/javascript")
@@ -50,11 +53,22 @@ class DevHandler(app.Handler):
         prefix = self.server.catalog.prefix + "/__api/"
         name = self.path[len(prefix):] if self.path.startswith(prefix) else ""
         method = getattr(self.server.api, name, None)
+        # Host check blocks DNS rebinding; the JSON content type forces a CORS preflight
+        # (never answered) for cross-origin pages.
+        if not self.host_allowed() or self.headers.get("Content-Type", "").split(";")[0] != "application/json":
+            self.send_error(403)
+            return
         if not name or name.startswith("_") or not callable(method):
             self.send_error(404)
             return
         try:
             args = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"[]")
+        except ValueError:
+            args = None
+        if not isinstance(args, list):  # the body is the JSON list of positional arguments
+            self.send_error(400)
+            return
+        try:
             body = json.dumps(method(*args), ensure_ascii=False).encode()
             self.send_response(200)
         except Exception as error:  # surface backend errors to the page
@@ -71,12 +85,13 @@ def main():
     parser.add_argument("--folder", type=Path, default=None)
     options = parser.parse_args()
     app.setup_logging()
-    folder = options.folder.resolve() if options.folder else poses.find_folder(app.EXE_DIR)
-    catalog = poses.PoseCatalog(folder, "/dev")
+    # Like the app run from source: saved collections only, no EXE-folder fallback.
+    folder, recursive = (options.folder.resolve(), True) if options.folder else poses.find_source(None)
+    catalog = poses.PoseCatalog(folder, "/dev", recursive=recursive)
     threading.Thread(target=catalog.scan, daemon=True).start()
     server = app.LocalServer(catalog)
     server.RequestHandlerClass = DevHandler
-    server.api = app.Api(catalog)
+    server.api = app.Api(catalog, fullscreen=False)
     print(f"http://127.0.0.1:{server.server_port}/dev/web/index.html", flush=True)
     server.serve_forever()
 

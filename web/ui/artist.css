@@ -1,0 +1,166 @@
+/* Artist tools styles (web/ui/artist.js). */
+
+/* Mirror / value study: applied to the rendered WebGL canvas (GPU-composited). */
+#stage.artist-flip {
+  transform: scaleX(-1);
+}
+
+#stage.artist-gray {
+  filter: grayscale(1);
+}
+
+/* Zoom > 1: the stage pans by dragging. */
+body.artist-zoomed:not(.idle) #stage {
+  cursor: grab;
+}
+
+body.artist-panning #stage,
+body.artist-panning:not(.idle) #stage {
+  cursor: grabbing;
+}
+
+/* Grid overlay (thirds / 8-heads proportions) above the stage, below the controls. */
+.artist-grid {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.25s;
+}
+
+.artist-grid.is-faded {
+  opacity: 0;
+  transition-duration: 0.12s;
+}
+
+/* Vertical glassy tool strip, bottom-right corner. */
+.artist-tools {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 26px;
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(12px);
+  opacity: 0.6;
+  transition: opacity 0.4s;
+}
+
+.artist-tools:hover,
+.artist-tools:focus-within {
+  opacity: 0.95;
+}
+
+body.idle .artist-tools {
+  opacity: 0.035;
+}
+
+body.error .artist-tools {
+  display: none;
+}
+
+.artist-tool {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  color: rgba(255, 255, 255, 0.72);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.15s;
+}
+
+.artist-tool svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.65;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.artist-tool svg .fill {
+  fill: currentColor;
+}
+
+.artist-tool svg .dash {
+  stroke-dasharray: 2 2.4;
+}
+
+.artist-tool:hover,
+.artist-tool:focus-visible {
+  color: white;
+  background: rgba(255, 255, 255, 0.11);
+  transform: scale(1.06);
+  outline: none;
+}
+
+.artist-tool:active {
+  transform: scale(0.95);
+}
+
+.artist-tool.is-active {
+  color: white;
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Small grid-mode marker («⅓» / «8») on the grid button. */
+.artist-tool[data-mode]:not([data-mode=""])::after {
+  content: attr(data-mode);
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  color: #16181b;
+  background: rgba(255, 255, 255, 0.85);
+  font: 600 10px/15px Segoe UI, sans-serif;
+  text-align: center;
+}
+
+/* Transient toast / zoom badge, left of the tool strip. */
+.artist-toast {
+  position: fixed;
+  right: 76px;
+  bottom: 22px;
+  z-index: 10;
+  max-width: calc(100vw - 100px);
+  padding: 7px 13px;
+  color: #e4e6e9;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 16px;
+  background: rgba(30, 32, 36, 0.62);
+  backdrop-filter: blur(12px);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.25s, transform 0.25s;
+}
+
+.artist-toast.is-visible {
+  opacity: 1;
+  transform: none;
+}
+
+.artist-toast.is-zoom {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}

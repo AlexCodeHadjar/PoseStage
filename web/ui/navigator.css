@@ -1,0 +1,521 @@
+/* Navigation UI styles (web/ui/navigator.js). */
+
+/* --- Counter: bottom-center glassy pill ---------------------------------- */
+.nav-counter {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(56vw, 640px);
+  padding: 5px 14px;
+  color: #d7d9dc;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(12px);
+  font-size: 12.5px;
+  line-height: 18px;
+  white-space: nowrap;
+  opacity: 0.62;
+  transform: translateX(-50%);
+  transition: opacity 0.4s;
+  pointer-events: none;
+}
+
+.nav-counter-pos {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.nav-counter.filtered .nav-counter-pos {
+  color: #a9c6ff;
+}
+
+.nav-counter-name {
+  min-width: 0;
+  overflow: hidden;
+  color: #9da1a8;
+  text-overflow: ellipsis;
+}
+
+.nav-counter-name::before {
+  content: "· ";
+}
+
+.nav-counter-star {
+  flex: none;
+  color: #f2c94c;
+}
+
+body.idle .nav-counter {
+  opacity: 0.16;
+}
+
+body.error .nav-counter,
+body.error .nav-open {
+  display: none;
+}
+
+/* --- Toast: above the counter --------------------------------------------- */
+.nav-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 56px;
+  z-index: 120;
+  max-width: min(80vw, 560px);
+  padding: 8px 16px;
+  overflow: hidden;
+  color: #eceef0;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  background: rgba(30, 32, 36, 0.82);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  font-size: 13.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translate(-50%, 8px);
+  transition: opacity 0.25s, transform 0.25s;
+  pointer-events: none;
+}
+
+.nav-toast.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.nav-toast.error {
+  border-color: rgba(255, 120, 110, 0.4);
+  color: #ffd6d2;
+}
+
+/* --- Gallery button: top-right -------------------------------------------- */
+.nav-open {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  z-index: 25;
+  width: 40px;
+  height: 40px;
+  padding: 10px;
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(12px);
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.4s, background 0.15s, transform 0.15s;
+}
+
+body.windowed .nav-open {
+  top: 40px;
+}
+
+.nav-open svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.nav-open:hover,
+.nav-open:focus-visible {
+  opacity: 0.95;
+  background: rgba(255, 255, 255, 0.11);
+  transform: scale(1.06);
+}
+
+body.idle .nav-open {
+  opacity: 0.035;
+}
+
+body.nav-gallery-open .nav-open,
+body.nav-gallery-open .nav-counter {
+  opacity: 0;
+}
+
+/* --- Gallery overlay ------------------------------------------------------ */
+.nav-gallery {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  padding: 22px;
+  background: rgba(10, 11, 13, 0.45);
+}
+
+body.windowed .nav-gallery {
+  top: 28px; /* keep the window drag bar usable */
+}
+
+.nav-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  color: #e4e6e9;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  background: rgba(26, 28, 32, 0.86);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.nav-gallery.busy .nav-panel {
+  cursor: progress;
+}
+
+.nav-gallery.busy .nav-scroller {
+  opacity: 0.45;
+}
+
+.nav-header {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.nav-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.nav-spacer {
+  flex: 1;
+}
+
+.nav-title {
+  margin: 0 6px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.nav-btn,
+.nav-seg,
+.nav-select,
+.nav-search,
+.nav-tags {
+  height: 30px;
+  padding: 0 12px;
+  color: #d5d7da;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  font: 13px Segoe UI, sans-serif;
+  outline: none;
+}
+
+.nav-btn,
+.nav-seg {
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.nav-btn:hover:not(:disabled),
+.nav-seg:hover {
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.nav-btn:disabled,
+.nav-select:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.nav-btn.subtle {
+  border-color: transparent;
+  background: transparent;
+  color: #a7abb1;
+}
+
+.nav-btn.danger {
+  border-color: rgba(255, 120, 110, 0.45);
+  background: rgba(255, 100, 90, 0.16);
+  color: #ffd6d2;
+}
+
+.nav-btn.on,
+.nav-seg.on,
+.nav-select.on {
+  border-color: rgba(130, 170, 255, 0.55);
+  background: rgba(110, 150, 255, 0.2);
+  color: #fff;
+}
+
+.nav-select {
+  max-width: 260px;
+  padding-right: 6px;
+  cursor: pointer;
+}
+
+.nav-select option {
+  color: #e4e6e9;
+  background: #24262b;
+}
+
+.nav-search {
+  width: 220px;
+  cursor: text;
+}
+
+.nav-search:focus,
+.nav-tags:focus,
+.nav-select:focus-visible,
+.nav-btn:focus-visible,
+.nav-seg:focus-visible {
+  border-color: rgba(130, 170, 255, 0.7);
+}
+
+.nav-close {
+  width: 30px;
+  padding: 0;
+}
+
+.nav-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nav-confirm-text {
+  color: #ffd6d2;
+}
+
+.nav-segmented {
+  display: inline-flex;
+}
+
+.nav-segmented .nav-seg {
+  border-radius: 0;
+  margin-left: -1px;
+}
+
+.nav-segmented .nav-seg:first-child {
+  margin-left: 0;
+  border-radius: 8px 0 0 8px;
+}
+
+.nav-segmented .nav-seg:last-child {
+  border-radius: 0 8px 8px 0;
+}
+
+.nav-count {
+  color: #9da1a8;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Grid of thumbnails: fixed-aspect boxes, so lazy loading never shifts the layout. */
+.nav-scroller {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 18px 18px;
+  outline: none;
+  scroll-padding: 14px;
+  overscroll-behavior: contain;
+}
+
+.nav-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  gap: 10px;
+}
+
+.nav-cell {
+  position: relative;
+  aspect-ratio: 3 / 4;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+  cursor: pointer;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 170px;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.nav-cell:hover {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.nav-cell.current {
+  border-color: rgba(242, 201, 76, 0.55);
+}
+
+.nav-cell.selected {
+  border-color: rgba(130, 170, 255, 0.95);
+  background: rgba(110, 150, 255, 0.12);
+  box-shadow: 0 0 0 2px rgba(130, 170, 255, 0.55);
+}
+
+.nav-thumb {
+  position: absolute;
+  inset: 8px 8px 24px;
+  width: calc(100% - 16px);
+  height: calc(100% - 32px);
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity 0.25s;
+  pointer-events: none;
+}
+
+.nav-cell.loaded .nav-thumb {
+  opacity: 1;
+}
+
+.nav-cell.broken::after {
+  content: "нет миниатюры";
+  position: absolute;
+  inset: 0 0 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6f737a;
+  font-size: 11px;
+}
+
+.nav-cell-name {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 4px;
+  overflow: hidden;
+  color: #9da1a8;
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-cell.current .nav-cell-name {
+  color: #f2d27a;
+}
+
+.nav-cell-num {
+  position: absolute;
+  top: 5px;
+  left: 7px;
+  color: #6f737a;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.nav-cell-star {
+  position: absolute;
+  top: 3px;
+  right: 7px;
+  color: #f2c94c;
+  font-size: 14px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+.nav-cell-mode {
+  position: absolute;
+  top: 24px;
+  right: 5px;
+  padding: 0 6px;
+  color: #cfe0ff;
+  border-radius: 6px;
+  background: rgba(70, 110, 200, 0.45);
+  font-size: 10.5px;
+  line-height: 16px;
+}
+
+.nav-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  color: #9da1a8;
+  font-size: 14px;
+}
+
+/* Details of the selected pose. */
+.nav-details {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.nav-details.none > :not(.nav-hint) {
+  visibility: hidden;
+}
+
+.nav-detail-name {
+  max-width: 34%;
+  overflow: hidden;
+  color: #d5d7da;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-star {
+  width: 32px;
+  padding: 0;
+  font-size: 15px;
+}
+
+.nav-star.on {
+  color: #f2c94c;
+  border-color: rgba(242, 201, 76, 0.45);
+  background: rgba(242, 201, 76, 0.12);
+}
+
+.nav-seg.effective {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.nav-tags {
+  flex: 1;
+  min-width: 180px;
+  cursor: text;
+}
+
+.nav-tags:disabled {
+  opacity: 0.4;
+}
+
+.nav-hint {
+  width: 100%;
+  color: #6f737a;
+  font-size: 11.5px;
+}
+
+@media (max-width: 720px) {
+  .nav-gallery {
+    padding: 8px;
+  }
+
+  .nav-search {
+    width: 100%;
+  }
+
+  .nav-detail-name {
+    max-width: 100%;
+  }
+
+  .nav-hint {
+    display: none;
+  }
+}

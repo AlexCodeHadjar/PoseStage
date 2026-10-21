@@ -7,15 +7,21 @@
   <title>PoseStage</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./ui/artist.css">
+  <link rel="stylesheet" href="./ui/navigator.css">
   <script type="importmap">{"imports":{"three":"./vendor/three/build/three.module.js","three/addons/":"./vendor/three/examples/jsm/"}}</script>
 </head>
 <body>
   <canvas id="stage" aria-label="Референс позы на подиуме"></canvas>
+  <div id="titlebar" class="pywebview-drag-region" aria-hidden="true"></div>
   <nav aria-label="Переключение поз">
     <button id="prev" class="arrow left" aria-label="Предыдущая поза"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 5-7 7 7 7"/></svg></button>
     <button id="next" class="arrow right" aria-label="Следующая поза"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.5 5 7 7-7 7"/></svg></button>
   </nav>
-  <div id="error" role="alert" hidden><p id="message"></p><button id="choose" hidden>Выбрать папку…</button></div>
+  <div id="error" role="alert" hidden>
+    <p id="message"></p>
+    <button id="choose" hidden>Выбрать папку…</button>
+  </div>
   <script type="module" src="./main.js"></script>
 </body>
 </html>
