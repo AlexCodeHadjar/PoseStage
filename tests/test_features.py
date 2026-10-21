@@ -479,9 +479,13 @@ class ViewPrefsTests(Base):
                                                                     'tag': '  сидя ', 'x': 1}})
         self.assertEqual(saved, {'flip': True, 'grid': 'thirds', 'compact': False,
                                  'filter': {'mode': 'kneel', 'favorites': True, 'tag': 'сидя'}})
+        self.assertEqual(api.save_view_prefs({'filter': {'search': 'поза ' + 'x' * 200}})['filter']['search'],
+                         'поза ' + 'x' * 95)
+        self.assertEqual(api.save_view_prefs({'filter': {'search': 5}})['filter']['search'], 'поза ' + 'x' * 95)
+        api.save_view_prefs({'filter': {'search': ''}})
         saved = api.save_view_prefs({'grid': 'spiral', 'gray': True, 'filter': {'tag': None, 'mode': 'fly'}})
         self.assertEqual(saved, {'flip': True, 'grid': 'thirds', 'compact': False, 'gray': True,
-                                 'filter': {'mode': 'kneel', 'favorites': True, 'tag': None}})
+                                 'filter': {'mode': 'kneel', 'favorites': True, 'tag': None, 'search': ''}})
         self.assertEqual(api.get_view_prefs(), saved)
         self.assertEqual(api.save_view_prefs('nope'), saved)
         poses.write_json(poses.DATA_DIR / 'view_prefs.json', {'flip': 'x', 'grid': 'proportions', 'other': 1})
@@ -548,10 +552,26 @@ class ThumbnailTests(Base):
         (folder / 'old.tmp').write_bytes(b'')
         os.utime(folder / 'old.tmp', (0, 0))
         (folder / 'fresh.tmp').write_bytes(b'')
-        poses.prune_thumbs(max_files=4, max_bytes=10 ** 6)
-        self.assertEqual(sorted(p.name for p in folder.iterdir()), ['2.png', '3.png', '4.png', '5.png', 'fresh.tmp'])
-        poses.prune_thumbs(max_files=100, max_bytes=25)
-        self.assertEqual(sorted(p.name for p in folder.glob('*.png')), ['4.png', '5.png'])
+        poses.prune_thumbs()  # far below the byte cap: no file-count limit
+        self.assertEqual(len(list(folder.iterdir())), 7)
+        self.assertFalse((folder / 'old.tmp').exists())
+        (folder / 'recent.png').write_bytes(b'x' * 100)  # used within THUMB_GRACE: never pruned
+        poses.prune_thumbs(max_bytes=25)
+        self.assertEqual(sorted(p.name for p in folder.glob('*.png')), ['recent.png'])
+
+    def test_pruned_thumbnail_is_regenerated_on_open_failure(self):
+        catalog = self.catalog()
+        thumb = poses.thumbnail(catalog.resolve('pose-1.png'))
+        real_open, pruned = Path.open, []
+
+        def flaky_open(path, *args, **kwargs):  # simulate one prune between lookup and open()
+            if path == thumb and not pruned:
+                pruned.append(thumb.unlink())
+            return real_open(path, *args, **kwargs)
+        with self.server(catalog) as get, patch.object(Path, 'open', flaky_open):
+            status, headers, data = get('/test/thumbs/pose-1.png')
+        self.assertEqual((status, headers['Content-Type']), (200, 'image/png'))
+        self.assertTrue(thumb.exists())
 
     def test_cache_hit_refreshes_lru_time(self):
         path = self.catalog().resolve('pose-1.png')

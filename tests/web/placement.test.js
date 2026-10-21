@@ -215,6 +215,26 @@ test('shortcuts: core options anyShift / eventKeys / enabled', () => {
   deepEqual(shortcuts.list()[0], { keys: ['ArrowRight'], title: 'next', group: 'G' }, 'list() hides core options');
 });
 
+test('shortcuts: description-only rows (mouse gestures)', () => {
+  const shortcuts = createShortcuts(() => {});
+  shortcuts.register({ keys: ['KeyZ'], title: 'Сброс вида', group: 'Вид', handler: () => {} });
+  const off = shortcuts.register({ keys: [], hint: 'Колесо', title: 'Масштаб', group: 'Вид' });
+  deepEqual(shortcuts.list(), [
+    { keys: ['KeyZ'], title: 'Сброс вида', group: 'Вид' },
+    { keys: [], title: 'Масштаб', group: 'Вид', hint: 'Колесо' },
+  ]);
+  equal(shortcuts.dispatch(new KeyboardEvent('keydown', { code: '', key: '', cancelable: true })), false, 'never matches');
+  let threw = false;
+  try {
+    shortcuts.register({ keys: [], title: 'no hint, no handler' });
+  } catch {
+    threw = true;
+  }
+  assert(threw, 'keys: [] without hint still needs a handler');
+  off();
+  equal(shortcuts.list().length, 1);
+});
+
 test('TextureCache.preload: neighbours in order, also from outside the subset', () => {
   const poses = Array.from({ length: 12 }, (_, i) => ({ url: `u${i}`, file: `f${i}` }));
   const cache = new TextureCache(poses, { capabilities: { getMaxAnisotropy: () => 1 } }, () => {});
@@ -413,6 +433,10 @@ test('integration: updatePose re-places the current figure live', async () => {
 
 test('integration: view zoom/pan keeps placement, figureRect follows', async () => {
   const { app, win } = harness;
+  // A pending window resize (e.g. the browser pane opening) must reach the app first,
+  // otherwise innerWidth and the app's viewport disagree for a moment.
+  await waitFor(() => win.__poseStage.canvas[0] === Math.floor(win.innerWidth * Math.min(win.devicePixelRatio, 2)),
+    5000, 'viewport settled');
   const scale = win.__poseStage.pixelScale;
   const r1 = app.view.figureRect();
   assert(r1 && r1.width > 0, 'figureRect');
@@ -424,8 +448,13 @@ test('integration: view zoom/pan keeps placement, figureRect follows', async () 
   near(win.__poseStage.pixelScale, scale, 1e-3, 'placement not re-fitted');
   const w = win.innerWidth;
   const h = win.innerHeight;
-  // Zooming about the center keeps the center fixed.
-  near(r2.left + r2.width / 2 - w / 2, (r1.left + r1.width / 2 - w / 2) * 2, 1e-2, 'center-relative x');
+  // figureRect follows the actual view offset (robust to whatever center was used).
+  const [ox, oy] = win.__poseStage.viewOffset;
+  // setZoom without a center zooms about the viewport center.
+  near(ox, w / 4, 1e-6, 'centered offset x');
+  near(oy, h / 4, 1e-6, 'centered offset y');
+  near(r2.left, (r1.left - ox) * 2, 1e-2, 'zoomed left');
+  near(r2.top, (r1.top - oy) * 2, 1e-2, 'zoomed top');
   app.view.pan(1e6, 1e6);
   deepEqual(win.__poseStage.viewOffset, [0, 0], 'pan clamped');
   app.view.pan(-1e6, -1e6);
@@ -524,8 +553,14 @@ test('integration: Shift+arrow navigates; arrows go to an open overlay; "?" on a
   equal(harness.win.__poseStage.queued, null, 'no navigation queued');
   assert(settled() && app.index() === (start + 1) % app.poses().length, 'pose unchanged while an overlay is open');
   app.overlays.close('gallery-test');
+  const offHint = app.shortcuts.register({ keys: [], hint: 'Колесо', title: 'Масштаб (тест)', group: 'Тесты' });
+  harness.win.document.body.classList.add('idle');
   key('Digit7', { key: '?', shiftKey: true });
   equal(app.overlays.any(), true, 'help via key "?"');
+  assert(!harness.win.document.body.classList.contains('idle'), 'a handled shortcut wakes the idle chrome');
+  const gesture = [...harness.win.document.querySelectorAll('#help kbd.help-gesture')].find((k) => k.textContent === 'Колесо');
+  assert(gesture && gesture.closest('dt').nextElementSibling.textContent === 'Масштаб (тест)', 'gesture row in help');
+  offHint();
   key('Escape');
   equal(app.overlays.any(), false);
 });

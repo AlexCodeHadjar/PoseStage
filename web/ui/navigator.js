@@ -73,6 +73,8 @@ export function install(app) {
   let search = '';
   let matches = null; // filtered indices (ascending) or null when no filter is active
   let libraryGen = 0;
+  let libraryReady = false; // the active collection's library has been loaded
+  let posesGen = 0; // bumped on every 'poses' event (collection switch / reload)
   let prefsRestored = false;
   let busy = false; // a collection operation is running
 
@@ -212,12 +214,16 @@ export function install(app) {
   searchInput.placeholder = 'Поиск по имени…';
   searchInput.setAttribute('aria-label', 'Поиск по имени файла');
   searchInput.spellcheck = false;
+  searchInput.maxLength = 100;
   let searchTimer = 0;
+  let searchSaveTimer = 0;
   searchInput.addEventListener('input', () => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
-      search = searchInput.value.trim();
+      search = searchInput.value.trim().slice(0, 100);
       applyFilter();
+      clearTimeout(searchSaveTimer);
+      searchSaveTimer = setTimeout(saveFilter, 600);
     }, 120);
   });
   const resetButton = button('nav-btn subtle', 'Сбросить', 'Сбросить фильтр');
@@ -339,7 +345,7 @@ export function install(app) {
     });
     const noResults = matches !== null && !matches.length;
     empty.hidden = !(noResults || !poses.length);
-    empty.textContent = poses.length ? 'Нет поз, подходящих под фильтр. Нажмите «Сбросить».' : 'В коллекции нет поз.';
+    empty.textContent = emptyMessage();
     grid.hidden = !visible.length;
     countLabel.textContent = matches ? `${matches.length} из ${poses.length}` : `${poses.length}`;
     markCurrent();
@@ -347,6 +353,17 @@ export function install(app) {
       const current = app.index();
       select(visible.includes(current) ? current : (visible[0] ?? -1), true);
     }
+  }
+
+  function emptyMessage() {
+    if (!poses.length) return 'В коллекции нет поз.';
+    if (filter.favorites && libraryReady && !library.favorites.size) {
+      return 'В этой коллекции пока нет избранных поз. Отметьте позу клавишей S или снимите «Только избранное».';
+    }
+    if (filter.favorites && !poses.some((pose) => library.favorites.has(pose.file))) {
+      return 'Нет избранных поз в этой коллекции. Снимите «Только избранное» или нажмите «Сбросить».';
+    }
+    return 'Нет поз, подходящих под фильтр. Нажмите «Сбросить».';
   }
 
   let currentCell = null;
@@ -536,9 +553,25 @@ export function install(app) {
       favorites: new Set(Array.isArray(data.favorites) ? data.favorites : []),
       tags: data.tags && typeof data.tags === 'object' ? data.tags : {},
     };
+    libraryReady = true;
     refreshTagOptions();
     refreshBadges();
+    if (!dropMissingTag()) applyFilter();
+  }
+
+  // The saved tag filter is global; a collection without that tag would show nothing.
+  // Drop just the tag (mode/favorites stay) once both the library and the prefs are in.
+  function dropMissingTag() {
+    if (!filter.tag || !libraryReady || !prefsRestored) return false;
+    const wanted = fold(filter.tag);
+    if (allTags().some((tag) => fold(tag) === wanted)) return false;
+    const missing = filter.tag;
+    filter = { ...filter, tag: null };
+    refreshTagOptions();
     applyFilter();
+    saveFilter();
+    toast(`Тег «${missing}» не найден в этой коллекции — фильтр по тегу снят`);
+    return true;
   }
 
   function allTags() {
@@ -635,7 +668,10 @@ export function install(app) {
 
   // --- Support mode --------------------------------------------------------
   async function setSupport(file, mode) {
+    const gen = posesGen;
     const pose = await call('set_support_mode', 'Не удалось изменить опору', file, mode);
+    // The collection was switched/reloaded meanwhile: this result belongs to the old list.
+    if (gen !== posesGen) return;
     if (!pose || typeof pose !== 'object' || !Array.isArray(pose.box)) return;
     const index = app.poses().findIndex((item) => item.file === file);
     if (index < 0) return;
@@ -691,7 +727,8 @@ export function install(app) {
   }
 
   function saveFilter() {
-    call('save_view_prefs', 'Не удалось сохранить фильтр', { filter: { ...filter } });
+    clearTimeout(searchSaveTimer);
+    call('save_view_prefs', 'Не удалось сохранить фильтр', { filter: { ...filter, search } });
   }
 
   function setFilter(change) {
@@ -714,14 +751,21 @@ export function install(app) {
     const prefs = await call('get_view_prefs', 'Не удалось загрузить настройки');
     prefsRestored = true;
     const saved = prefs?.filter;
-    if (!saved || typeof saved !== 'object') return;
+    if (!saved || typeof saved !== 'object') {
+      dropMissingTag();
+      return;
+    }
+    if (typeof saved.search === 'string' && !searchInput.value) {
+      search = saved.search.trim().slice(0, 100);
+      searchInput.value = search;
+    }
     filter = {
       mode: FILTER_MODES.some(([mode]) => mode === saved.mode) ? saved.mode : 'all',
       favorites: saved.favorites === true,
       tag: typeof saved.tag === 'string' && saved.tag ? saved.tag : null,
     };
     refreshTagOptions();
-    applyFilter();
+    if (!dropMissingTag()) applyFilter();
   }
 
   // --- Collections ---------------------------------------------------------
@@ -832,7 +876,9 @@ export function install(app) {
   // --- Events --------------------------------------------------------------
   app.on('poses', (detail) => {
     poses = Array.isArray(detail?.poses) ? detail.poses : app.poses();
+    posesGen++;
     library = { favorites: new Set(), tags: {} };
+    libraryReady = false;
     cellsFor = null;
     selected = -1;
     // reload() resets the core's order; re-apply (library-dependent parts refine after load).

@@ -818,7 +818,12 @@ chooseButton.addEventListener('click', async () => {
 });
 document.querySelector('#titlebar').addEventListener('dblclick', () => api?.toggle_fullscreen());
 
-window.addEventListener('keydown', (event) => shortcuts.dispatch(event));
+// A handled shortcut wakes the idle chrome so tool-state changes are visible.
+window.addEventListener('keydown', (event) => {
+  if (shortcuts.dispatch(event)) {
+    chrome.wake();
+  }
+});
 window.addEventListener('pointermove', (event) => {
   chrome.wake();
   mouse = { x: (event.clientX / innerWidth) * 2 - 1, y: 1 - (event.clientY / innerHeight) * 2, time: performance.now() };

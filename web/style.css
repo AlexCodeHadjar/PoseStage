@@ -189,6 +189,12 @@ body.idle #titlebar {
   text-align: center;
 }
 
+.help-panel kbd.help-gesture {
+  border-style: dashed;
+  background: transparent;
+  color: #c7cace;
+}
+
 .help-hint {
   margin: 16px 0 0;
   color: #80848b;

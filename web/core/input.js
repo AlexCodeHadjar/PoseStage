@@ -94,16 +94,22 @@ export function createShortcuts(report) {
   //   anyShift: also fire with Shift held (plain keys as at baseline),
   //   eventKeys: also match KeyboardEvent.key values (layout-independent "?"),
   //   enabled: () => boolean, skipped (event left untouched) while false.
+  //
+  // Description-only rows (mouse gestures): keys: [] plus `hint`, no handler
+  // needed, e.g. register({keys: [], hint: 'Колесо', title: 'Масштаб', group}).
+  // They never match a key event; the help overlay shows the hint text.
   function register(definition) {
-    const { keys, title = '', group = '', handler, anyShift = false, eventKeys = [], enabled = null } = definition || {};
-    if (!Array.isArray(keys) || typeof handler !== 'function') {
-      throw new TypeError('shortcuts.register({keys: string[], title, group, handler})');
+    const { keys, title = '', group = '', hint = '', handler, anyShift = false, eventKeys = [], enabled = null } = definition || {};
+    const describeOnly = Array.isArray(keys) && keys.length === 0 && Boolean(hint);
+    if (!Array.isArray(keys) || (typeof handler !== 'function' && !describeOnly)) {
+      throw new TypeError('shortcuts.register({keys: string[], title, group, handler}) or ({keys: [], hint, title, group})');
     }
     const entry = {
       keys: keys.map(normalizeCombo),
       title: String(title),
       group: String(group),
-      handler,
+      hint: hint ? String(hint) : '',
+      handler: typeof handler === 'function' ? handler : () => {},
       anyShift: !!anyShift,
       eventKeys: [...eventKeys],
       enabled: typeof enabled === 'function' ? enabled : null,
@@ -118,7 +124,10 @@ export function createShortcuts(report) {
   }
 
   function list() {
-    return definitions.map(({ keys, title, group }) => ({ keys: [...keys], title, group }));
+    // `hint` is present only on entries registered with one.
+    return definitions.map(({ keys, title, group, hint }) => (
+      hint ? { keys: [...keys], title, group, hint } : { keys: [...keys], title, group }
+    ));
   }
 
   // Runs the matching handler; returns true when a shortcut consumed the event.

@@ -127,12 +127,12 @@ class Handler(BaseHTTPRequestHandler):
         path = unquote(urlsplit(self.path).path)
         kind, _, relative = path[len(catalog.prefix) + 1:].partition("/") \
             if path.startswith(catalog.prefix + "/") else ("", "", "")
-        file = None
+        file = source = None
         if kind in ("poses", "thumbs"):
             # Allowlisted relative path + containment check inside the collection folder.
-            file = catalog.resolve(relative)
+            file = source = catalog.resolve(relative)
             if file is not None and kind == "thumbs":
-                file = poses.thumbnail(file)
+                file = poses.thumbnail(source)
         elif kind == "web":
             # Reject Windows drive/UNC/device paths before resolve() can touch them.
             if (not relative or any(part == ".." for part in relative.split("/"))
@@ -148,8 +148,15 @@ class Handler(BaseHTTPRequestHandler):
         try:
             stream = file.open("rb")
         except OSError:
-            self.send_error(404)
-            return
+            # A cached thumbnail may vanish between lookup and open (pruned): regenerate once.
+            file = poses.thumbnail(source) if kind == "thumbs" else None
+            try:
+                stream = file.open("rb") if file else None
+            except OSError:
+                stream = None
+            if stream is None:
+                self.send_error(404)
+                return
         with stream:
             html = stream.read() if file.suffix.lower() == ".html" else None
             self.send_response(200)
@@ -418,7 +425,8 @@ def create_app(*, hidden=False, fullscreen=True):
         folder, recursive = None, True
     catalog = PoseCatalog(folder, "/" + secrets.token_urlsafe(24), recursive=recursive)
     threading.Thread(target=catalog.scan, name="pose-scan", daemon=True).start()
-    threading.Thread(target=poses.prune_thumbs, name="thumb-prune", daemon=True).start()
+    threading.Thread(target=lambda: catalog.ready.wait() and poses.prune_thumbs(),  # after the first scan
+                     name="thumb-prune", daemon=True).start()
     server = LocalServer(catalog)
     threading.Thread(target=server.serve_forever, name="loopback-http", daemon=True).start()
     api = Api(catalog, fullscreen=fullscreen)

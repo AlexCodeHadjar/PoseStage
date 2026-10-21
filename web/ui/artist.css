@@ -41,8 +41,8 @@ body.artist-panning:not(.idle) #stage {
   right: 18px;
   bottom: 18px;
   z-index: 10;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 40px;
   gap: 4px;
   padding: 5px;
   border: 1px solid rgba(255, 255, 255, 0.13);
@@ -132,11 +132,12 @@ body.error .artist-tools {
   text-align: center;
 }
 
-/* Transient toast / zoom badge, left of the tool strip. */
+/* Transient toast / zoom badge, left of the tool strip and above the navigator's
+   bottom-centre counter row (≈18–56 px from the bottom, up to 56vw wide). */
 .artist-toast {
   position: fixed;
   right: 76px;
-  bottom: 22px;
+  bottom: 66px;
   z-index: 10;
   max-width: calc(100vw - 100px);
   padding: 7px 13px;
@@ -163,4 +164,38 @@ body.error .artist-tools {
 .artist-toast.is-zoom {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
+}
+
+/*
+ * Short windows: one 6-button column (~280 px) would reach the core's → arrow, which is
+ * centred at top: 50% (±30 px). Two columns of 36-px buttons (~130 px tall) stay below it
+ * down to ~350 px of height.
+ */
+@media (max-height: 700px) {
+  .artist-tools {
+    grid-template-columns: repeat(2, 36px);
+    border-radius: 22px;
+  }
+
+  .artist-tool {
+    width: 36px;
+    height: 36px;
+    padding: 8px;
+  }
+
+  .artist-toast {
+    right: 116px;
+    max-width: calc(100vw - 134px);
+  }
+}
+
+/*
+ * Short AND narrow windows: the two-column strip would reach the navigator's counter row
+ * (centred, ≈18–56 px from the bottom, up to 56vw wide): lift it above that row. It still
+ * clears the → arrow down to ~450 px of height.
+ */
+@media (max-width: 520px) and (max-height: 700px) {
+  .artist-tools {
+    bottom: 64px;
+  }
 }

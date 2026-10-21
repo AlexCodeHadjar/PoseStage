@@ -50,6 +50,13 @@ export function createHelp(shortcuts, overlays) {
           kbd.textContent = label;
           keys.append(kbd);
         }
+        if (item.hint) {
+          // Mouse gesture or other non-key input, e.g. «Колесо».
+          const gesture = document.createElement('kbd');
+          gesture.className = 'help-gesture';
+          gesture.textContent = item.hint;
+          keys.append(gesture);
+        }
         const text = document.createElement('dd');
         text.textContent = item.title;
         table.append(keys, text);

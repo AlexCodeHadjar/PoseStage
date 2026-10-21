@@ -32,7 +32,7 @@ export function install(app) {
     const text = `Инструменты художника: ${error?.stack || error?.message || error}`;
     console.error(text);
     try {
-      Promise.resolve(app.api?.report_error(text)).catch(() => {});
+      Promise.resolve(currentApi()?.report_error(text)).catch(() => {});
     } catch {
       // Logging must never throw.
     }
@@ -41,7 +41,7 @@ export function install(app) {
   // Calls an API method; resolves to its result, or undefined when the API (or this
   // method, e.g. in a test double) is missing or the call rejects (rejections are reported).
   async function call(name, ...args) {
-    const api = app.api;
+    const api = currentApi();
     if (!api || typeof api[name] !== 'function') {
       return undefined;
     }
@@ -54,24 +54,46 @@ export function install(app) {
     }
   }
 
+  // The core sets app.api only after the UI modules are installed; pywebview's object is
+  // available earlier (read it directly; never resolve a promise with it — the dev
+  // harness API is a thenable-looking Proxy).
+  function currentApi() {
+    return app.api || window.pywebview?.api || null;
+  }
+
   function save(partial) {
-    if (app.api) {
-      call('save_view_prefs', partial);
-    }
+    call('save_view_prefs', partial);
   }
 
   // --- Mirror-aware view wrappers (screen CSS px in, layout CSS px out) ------
+  // Calls from outside this module also cancel a running zoom glide, so an external
+  // setZoom/pan/resetView is never overridden by the animation's remaining frames.
   const raw = {
     setZoom: app.view.setZoom,
     pan: app.view.pan,
+    resetView: app.view.resetView,
     figureRect: app.view.figureRect,
   };
   const width = () => canvas.clientWidth || innerWidth;
-  app.view.setZoom = (zoom, centerX, centerY) => {
+  function applyZoom(zoom, centerX, centerY) {
     const x = state.flip && Number.isFinite(centerX) ? width() - centerX : centerX;
     raw.setZoom(zoom, x, centerY);
+  }
+  function applyPan(dx, dy) {
+    raw.pan(state.flip ? -dx : dx, dy);
+  }
+  app.view.setZoom = (zoom, centerX, centerY) => {
+    stopZoomAnimation();
+    applyZoom(zoom, centerX, centerY);
   };
-  app.view.pan = (dx, dy) => raw.pan(state.flip ? -dx : dx, dy);
+  app.view.pan = (dx, dy) => {
+    stopZoomAnimation();
+    applyPan(dx, dy);
+  };
+  app.view.resetView = () => {
+    stopZoomAnimation();
+    raw.resetView();
+  };
   app.view.figureRect = () => {
     const rect = raw.figureRect();
     if (!rect || !state.flip) {
@@ -348,7 +370,7 @@ export function install(app) {
       next = zoomTarget;
     }
     try {
-      app.view.setZoom(next, zoomAnchor[0], zoomAnchor[1]);
+      applyZoom(next, zoomAnchor[0], zoomAnchor[1]);
     } catch (error) {
       report(error);
       zoomTarget = null;
@@ -382,7 +404,7 @@ export function install(app) {
 
   function resetZoomNow() {
     stopZoomAnimation();
-    app.view.resetView();
+    raw.resetView();
     syncZoomState();
   }
 
@@ -447,7 +469,7 @@ export function install(app) {
     }
     drag.x = event.clientX;
     drag.y = event.clientY;
-    app.view.pan(dx, dy);
+    applyPan(dx, dy); // a pan during a zoom glide keeps the glide going
   });
 
   function endDrag(event) {
@@ -552,7 +574,7 @@ export function install(app) {
     { keys: ['KeyH'], title: 'Зеркально по горизонтали', handler: once(toggleFlip) },
     { keys: ['KeyV'], title: 'Оттенки серого (тональный этюд)', handler: once(toggleGray) },
     { keys: ['KeyL'], title: 'Сетка: выкл → трети → пропорции (8 голов)', handler: once(cycleGrid) },
-    { keys: ['Equal', 'Shift+Equal', 'NumpadAdd'], title: 'Приблизить (также колесо мыши)', handler: () => zoomBy(KEY_STEP, centerX(), centerY()) },
+    { keys: ['Equal', 'Shift+Equal', 'NumpadAdd'], title: 'Приблизить', handler: () => zoomBy(KEY_STEP, centerX(), centerY()) },
     { keys: ['Minus', 'NumpadSubtract'], title: 'Отдалить', handler: () => zoomBy(1 / KEY_STEP, centerX(), centerY()) },
     { keys: ['KeyZ'], title: 'Сбросить масштаб и панораму', handler: once(() => resetZoom()) },
     { keys: ['KeyT'], title: 'Поверх всех окон', handler: once(() => toggleOnTop().catch(report)) },
@@ -560,6 +582,20 @@ export function install(app) {
   ];
   for (const definition of shortcuts) {
     app.shortcuts.register({ ...definition, group: GROUP });
+  }
+  // Mouse gestures as description-only help rows (core: keys: [] + hint, no handler).
+  // An older core rejects such rows with a TypeError: then they are simply skipped.
+  const gestures = [
+    { hint: 'Колесо мыши', title: 'Масштаб у курсора' },
+    { hint: 'Перетаскивание', title: 'Панорама (при масштабе больше 100 %)' },
+    { hint: 'Двойной щелчок', title: 'Масштаб 1× ↔ 2,5×' },
+  ];
+  try {
+    for (const gesture of gestures) {
+      app.shortcuts.register({ keys: [], ...gesture, group: GROUP });
+    }
+  } catch {
+    // Description-only entries are not supported by this core.
   }
 
   // --- Events / frame hook -----------------------------------------------
@@ -597,11 +633,19 @@ export function install(app) {
   render();
 
   // --- 6. Restore saved prefs ----------------------------------------------
-  (async () => {
-    await app.ready;
-    if (!app.api) {
+  // Fetched as soon as pywebview's API exists (before the first pose is shown) so
+  // flip/gray/grid never flash off; app.ready is the fallback.
+  let restoring = false;
+  function restoreOnce() {
+    // pywebview may create window.pywebview.api before its methods are injected.
+    if (restoring || typeof currentApi()?.get_view_prefs !== 'function') {
       return;
     }
+    restoring = true;
+    restore().catch(report);
+  }
+
+  async function restore() {
     const prefs = (await call('get_view_prefs')) || {};
     if (!touched.has('flip') && typeof prefs.flip === 'boolean') state.flip = prefs.flip;
     if (!touched.has('gray') && typeof prefs.gray === 'boolean') state.gray = prefs.gray;
@@ -618,5 +662,9 @@ export function install(app) {
       await setCompact(true);
     }
     render();
-  })().catch(report);
+  }
+
+  window.addEventListener('pywebviewready', restoreOnce, { once: true });
+  restoreOnce();
+  app.ready.then(restoreOnce, () => {});
 }

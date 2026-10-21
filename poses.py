@@ -26,8 +26,10 @@ MODES = ("feet", "kneel", "ground")
 CUTS = {"feet": .93, "kneel": .78, "ground": .55}
 MAX_FILES = 50_000
 THUMB_SIZE = 320
-THUMB_LIMITS = (500, 64 * 1024 * 1024)  # LRU cap for DATA_DIR/thumbs: files, bytes
+THUMB_MAX_BYTES = 256 * 1024 * 1024  # LRU cap for DATA_DIR/thumbs
+THUMB_GRACE, THUMB_TOUCH = 600, 300  # never prune thumbnails used within 10 min; refresh mtime every 5
 MAX_TAGS, MAX_TAG_LENGTH = 16, 32
+MAX_SEARCH_LENGTH = 100  # view_prefs filter.search
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 DATA_DIR = Path(os.environ.get("APPDATA", str(Path.home() / "AppData/Roaming"))) / "PoseStage"
 _write_lock = threading.Lock()
@@ -411,6 +413,8 @@ def clean_view_prefs(prefs) -> dict:
         if "tag" in raw and (raw["tag"] is None or isinstance(raw["tag"], str)):
             tag = normalize_tags([raw["tag"]]) if raw["tag"] else []
             filter_["tag"] = tag[0] if tag else None
+        if isinstance(raw.get("search"), str):
+            filter_["search"] = raw["search"][:MAX_SEARCH_LENGTH]
         if filter_:
             result["filter"] = filter_
     return result
@@ -435,37 +439,41 @@ def save_view_prefs(prefs) -> dict:
 # --- Thumbnails --------------------------------------------------------------------------------
 
 def _cached_thumb(target: Path) -> bool:
-    """True if cached; refreshes mtime (at most hourly) so pruning drops least recently used first."""
+    """True if cached; refreshes mtime (at most every THUMB_TOUCH s) so pruning drops least recently
+    used first and never a thumbnail in use (see THUMB_GRACE)."""
     try:
-        if time.time() - target.stat().st_mtime > 3600:
+        if time.time() - target.stat().st_mtime > THUMB_TOUCH:
             os.utime(target)
         return True
     except OSError:
         return False
 
 
-def prune_thumbs(max_files=THUMB_LIMITS[0], max_bytes=THUMB_LIMITS[1]):
-    """Delete least recently used thumbnails beyond the limits, and stale temp files."""
+def prune_thumbs(max_bytes=THUMB_MAX_BYTES):
+    """Delete least recently used thumbnails beyond `max_bytes`, and stale temp files.
+    Files used within THUMB_GRACE seconds are never deleted. Run after the first scan."""
     now, files = time.time(), []
     try:
         with os.scandir(DATA_DIR / "thumbs") as entries:
             for entry in entries:
                 stat = entry.stat()
+                used = max(stat.st_mtime, stat.st_atime)
                 if entry.name.endswith(".tmp"):
-                    if now - stat.st_mtime > 3600:
+                    if now - used > 3600:
                         Path(entry.path).unlink(missing_ok=True)
                 elif entry.name.endswith(".png"):
-                    files.append((stat.st_mtime, stat.st_size, entry.path))
+                    files.append((used, stat.st_size, entry.path))
     except OSError:
         return
     total = 0
-    for count, (_, size, path) in enumerate(sorted(files, reverse=True), 1):
+    for used, size, path in sorted(files, reverse=True):
         total += size
-        if count > max_files or total > max_bytes:
+        if total > max_bytes and now - used > THUMB_GRACE:
             try:
                 os.unlink(path)
             except OSError:  # being served right now
                 pass
+
 
 def thumbnail(path: Path) -> Path | None:
     """PNG preview (long side ≤ THUMB_SIZE, alpha kept) cached in DATA_DIR/thumbs, never in the pose folder."""

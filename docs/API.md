@@ -6,6 +6,8 @@
 ## 1. Python API (`window.pywebview.api`, класс `app.Api`)
 
 Все методы возвращают JSON-совместимые значения. Публичные атрибуты `Api` — только методы.
+Некорректный ввод (`set_support_mode`, `toggle_favorite`, `set_tags`, `switch_collection`)
+вызывает `ValueError` — промис в JS отклоняется; UI-модули ловят его и показывают тост.
 
 ### Позы
 
@@ -31,7 +33,8 @@ type Pose = {
 
 - `get_state() -> {index: int, file: string|null}` — индекс восстанавливается **по имени файла**;
   если файла больше нет — по сохранённому индексу, ограниченному диапазоном, иначе 0.
-- `save_state(index: int)` — сохраняет `file` (и индекс как запасной вариант).
+- `save_state(index: int, file?: string)` — сохраняет `file` (и индекс как запасной вариант).
+  Переданный `file` важнее индекса; файл не из текущего каталога игнорируется.
 
 ### Опора позы
 
@@ -48,7 +51,8 @@ type Collection = {id: string; name: string; folder: string; active: boolean};
 - `get_collections() -> Collection[]`
 - `add_collection() -> {collections: Collection[], poses: Pose[]}` — диалог выбора папки;
   при успехе новая коллекция становится активной. Отмена — вернуть текущие данные.
-- `switch_collection(id: string) -> {collections, poses}`
+- `switch_collection(id: string) -> {collections, poses}` — недоступная или пустая папка:
+  `ValueError("Папка недоступна: …")`, активная коллекция не меняется.
 - `remove_collection(id: string) -> {collections, poses}` — последнюю удалить нельзя.
 - `choose_folder() -> Pose[]` — совместимость: то же, что `add_collection().poses`.
 
@@ -64,7 +68,9 @@ type Collection = {id: string; name: string; folder: string; active: boolean};
 - `get_view_prefs() -> object`, `save_view_prefs(prefs: object) -> object`
   Хранятся в `view_prefs.json`; бэкенд принимает только известные ключи с проверкой типов:
   `flip: bool, gray: bool, grid: "off"|"thirds"|"proportions", on_top: bool, compact: bool,
-  filter: {mode: "all"|"feet"|"kneel"|"ground", favorites: bool, tag: string|null}`.
+  filter: {mode: "all"|"feet"|"kneel"|"ground", favorites: bool, tag: string|null, search: string}`.
+  `save_view_prefs` сливает частичный объект с сохранённым; `get_view_prefs` при первом
+  запуске возвращает `{}` — значения по умолчанию задаёт фронтенд.
 
 ### Окно
 
@@ -73,6 +79,14 @@ type Collection = {id: string; name: string; folder: string; active: boolean};
 - `set_compact(on: bool) -> bool` — компактный режим: выход из полного экрана, окно ~ 480×720
   у правого края рабочей области, поверх всех. `false` — возврат в полный экран.
 - Перетаскивание frameless-окна: элементы с CSS-классом `pywebview-drag-region`.
+
+### WebView2
+
+Сначала системный Runtime; при ошибке инициализации программа один раз перезапускается
+с `EXE_DIR\WebView2` (`POSESTAGE_WEBVIEW2=portable`) и записывает
+`webview2_system_failed.json`, пока версия системного Runtime не изменится.
+CSP: `script-src 'self' 'unsafe-eval' 'sha256-<importmap>'` — `unsafe-eval` нужен мосту
+pywebview (`new Function`), хэш importmap считается из `index.html` при каждом ответе.
 
 ### HTTP
 
@@ -100,8 +114,9 @@ type App = {
   setOrder(indices: number[] | null): void;     // порядок обхода ←/→ (фильтр); null — все
   on(event: "pose"|"poses"|"transition", cb: (detail) => void): () => void;
   shortcuts: {
-    register(def: {keys: string[]; title: string; group: string; handler: (e) => void}): () => void;
-    list(): {keys, title, group}[];
+    // handler обязателен, кроме строк-описаний жестов мыши: keys: [] и непустой hint.
+    register(def: {keys: string[]; title: string; group: string; hint?: string; handler?: (e) => void}): () => void;
+    list(): {keys, title, group, hint?}[];
   };
   overlays: {             // модальные панели: Esc сначала закрывает их, потом выходит
     open(id: string, close: () => void): void;
