@@ -37,17 +37,17 @@ class GeometryTests(unittest.TestCase):
             self.assertAlmostEqual(gx, x, places=9)
             self.assertAlmostEqual(gz, z, places=9)
 
-    def test_one_body_size_and_limits(self):
+    def test_one_body_size_and_limits(self):  # "body" sizing
         body = desktop.BODY_TO_PODIUM * self.meta['diameter']
         for stature in (600, 800, 1000):
-            p = desktop.fit_placement(pose(stature=stature), self.meta)
+            p = desktop.fit_placement(pose(stature=stature), self.meta, 'body')
             self.assertFalse(p['limited'])
             self.assertAlmostEqual(p['scale'] * stature, body, places=6)
-        bigger = desktop.fit_placement(pose(stature=800, adjust=1.1), self.meta)
+        bigger = desktop.fit_placement(pose(stature=800, adjust=1.1), self.meta, 'body')
         self.assertAlmostEqual(bigger['scale'] * 800, body * 1.1, places=6)
         # A very wide lying pose cannot keep the body size: shrunk, contacts still on the podium.
         lying = pose(box=(0, 700, 2000, 900), mode='ground', stature=600, w=2000)
-        p = desktop.fit_placement(lying, self.meta)
+        p = desktop.fit_placement(lying, self.meta, 'body')
         self.assertTrue(p['limited'])
         contacts, cx, cy = desktop.support_data(lying)
         for x, y in contacts:
@@ -55,7 +55,8 @@ class GeometryTests(unittest.TestCase):
                                        self.meta['centerY'] + (cy - y) * p['scale'])
             self.assertLessEqual(math.hypot(gx, gz), self.meta['supportRadius'] + 1e-9)
 
-    def test_file_sizing_keeps_every_picture_at_one_scale(self):
+    def test_file_sizing_keeps_every_picture_at_one_scale(self):  # the default
+        self.assertEqual(desktop.fit_placement.__defaults__, ('file',))
         scales = {desktop.fit_placement(pose(stature=s, adjust=a, box=b), self.meta, 'file')['scale']
                   for s, a, b in ((600, 1, (100, 100, 300, 900)), (900, 1.3, (0, 700, 2000, 900)))}
         self.assertEqual(len(scales), 1)  # no body estimate, no correction, no limits

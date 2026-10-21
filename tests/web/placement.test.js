@@ -19,34 +19,45 @@ import { normalizeCombo, keyLabel, createOverlays, createShortcuts } from '../..
 const BODY_POSES = FIXTURE_POSES.map((pose, i) => ({ ...pose, stature: (pose.box[3] - pose.box[1]) * (0.8 + 0.1 * i) }));
 
 test('one body size: every pose that fits gets stature × scale = share of the viewport', () => {
-  let free = 0;
-  for (const [width, height] of VIEWPORTS) {
-    const mapping = groundMapping(makeCamera(frameCamera, width, height).camera);
-    for (const pose of BODY_POSES) {
-      const placement = fitPlacement(pose, mapping);
-      near(placement.desired, (STATURE_SHARE * height) / pose.stature, 1e-12, `${pose.file} desired`);
-      assert(placement.scale <= placement.desired * (1 + 1e-12), `${pose.file} never larger than the body size`);
-      if (!placement.limited) {
-        free++;
-        near(placement.scale * pose.stature, STATURE_SHARE * height, 1e-9, `${width}x${height} ${pose.file} body`);
+  setSizing('body');
+  try {
+    let free = 0;
+    for (const [width, height] of VIEWPORTS) {
+      const mapping = groundMapping(makeCamera(frameCamera, width, height).camera);
+      for (const pose of BODY_POSES) {
+        const placement = fitPlacement(pose, mapping);
+        near(placement.desired, (STATURE_SHARE * height) / pose.stature, 1e-12, `${pose.file} desired`);
+        assert(placement.scale <= placement.desired * (1 + 1e-12), `${pose.file} never larger than the body size`);
+        if (!placement.limited) {
+          free++;
+          near(placement.scale * pose.stature, STATURE_SHARE * height, 1e-9, `${width}x${height} ${pose.file} body`);
+        }
       }
     }
+    // Fixtures include deliberately oversized bodies and a narrow 480×720 window.
+    assert(free >= VIEWPORTS.length * 2, `fixtures that fit unshrunk (${free})`);
+  } finally {
+    setSizing('file');
   }
-  // Fixtures include deliberately oversized bodies and a narrow 480×720 window.
-  assert(free >= VIEWPORTS.length * 2, `fixtures that fit unshrunk (${free})`);
 });
 
 test('scale_adjust multiplies the size; no stature falls back to the box height', () => {
-  const mapping = groundMapping(makeCamera(frameCamera, 1920, 1080).camera);
-  const pose = BODY_POSES[3];
-  near(bodyScale({ ...pose, scale_adjust: 1.1 }, mapping), bodyScale(pose, mapping) * 1.1, 1e-12, 'adjust');
-  const bare = { ...FIXTURE_POSES[3] };
-  near(bodyScale(bare, mapping), (STATURE_SHARE * 1080) / (bare.box[3] - bare.box[1]), 1e-12, 'fallback');
-  const smaller = fitPlacement({ ...pose, scale_adjust: 0.8 }, mapping);
-  near(smaller.scale, fitPlacement(pose, mapping).scale * 0.8, 1e-9, 'smaller pose keeps the ratio');
+  setSizing('body');
+  try {
+    const mapping = groundMapping(makeCamera(frameCamera, 1920, 1080).camera);
+    const pose = BODY_POSES[3];
+    near(bodyScale({ ...pose, scale_adjust: 1.1 }, mapping), bodyScale(pose, mapping) * 1.1, 1e-12, 'adjust');
+    const bare = { ...FIXTURE_POSES[3] };
+    near(bodyScale(bare, mapping), (STATURE_SHARE * 1080) / (bare.box[3] - bare.box[1]), 1e-12, 'fallback');
+    const smaller = fitPlacement({ ...pose, scale_adjust: 0.8 }, mapping);
+    near(smaller.scale, fitPlacement(pose, mapping).scale * 0.8, 1e-9, 'smaller pose keeps the ratio');
+  } finally {
+    setSizing('file');
+  }
 });
 
-test('file sizing: one scale for every picture, support centred, no limits', () => {
+test('file sizing (default): one scale for every picture, support centred, no limits', () => {
+  equal(setSizing('nope'), 'file', 'default mode');
   const mapping = groundMapping(makeCamera(frameCamera, 1920, 1080).camera);
   try {
     setSizing('file');
@@ -57,29 +68,34 @@ test('file sizing: one scale for every picture, support centred, no limits', () 
       near(p.x, mapping.centerX + ((pose.box[0] + pose.box[2]) / 2 - p.cx) * p.scale, 1e-9, 'support centred');
     }
   } finally {
-    setSizing('body');
+    setSizing('file');
   }
 });
 
 test('limits: contacts on the podium, figure inside the screen margins', () => {
-  for (const [width, height] of VIEWPORTS) {
-    for (const shift of CAMERA_SHIFTS) {
-      const mapping = groundMapping(makeCamera(frameCamera, width, height, shift).camera);
-      for (const base of BODY_POSES) {
-        for (const adjust of [1, 2]) {
-          const pose = { ...base, scale_adjust: adjust };
-          const p = fitPlacement(pose, mapping);
-          const [x1, y1, x2, y2] = pose.box;
-          const key = `${width}x${height}/${shift}/${pose.file}×${adjust}`;
-          assert(p.scale > 0, `${key} scale`);
-          assert(p.maxContactRadius <= SUPPORT_RADIUS + 1e-9, `${key} contacts on the podium`);
-          assert(mapping.centerX + (x1 - p.cx) * p.scale >= -width * 0.42 - 1e-6, `${key} left edge`);
-          assert(mapping.centerX + (x2 - p.cx) * p.scale <= width * 0.42 + 1e-6, `${key} right edge`);
-          assert(mapping.centerY + (p.cy - y1) * p.scale <= height * 0.43 + 1e-6, `${key} top edge`);
-          if (adjust === 2) assert(p.limited, `${key} doubled size must be limited`);
+  setSizing('body');
+  try {
+    for (const [width, height] of VIEWPORTS) {
+      for (const shift of CAMERA_SHIFTS) {
+        const mapping = groundMapping(makeCamera(frameCamera, width, height, shift).camera);
+        for (const base of BODY_POSES) {
+          for (const adjust of [1, 2]) {
+            const pose = { ...base, scale_adjust: adjust };
+            const p = fitPlacement(pose, mapping);
+            const [x1, y1, x2, y2] = pose.box;
+            const key = `${width}x${height}/${shift}/${pose.file}×${adjust}`;
+            assert(p.scale > 0, `${key} scale`);
+            assert(p.maxContactRadius <= SUPPORT_RADIUS + 1e-9, `${key} contacts on the podium`);
+            assert(mapping.centerX + (x1 - p.cx) * p.scale >= -width * 0.42 - 1e-6, `${key} left edge`);
+            assert(mapping.centerX + (x2 - p.cx) * p.scale <= width * 0.42 + 1e-6, `${key} right edge`);
+            assert(mapping.centerY + (p.cy - y1) * p.scale <= height * 0.43 + 1e-6, `${key} top edge`);
+            if (adjust === 2) assert(p.limited, `${key} doubled size must be limited`);
+          }
         }
       }
     }
+  } finally {
+    setSizing('file');
   }
 });
 

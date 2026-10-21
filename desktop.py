@@ -28,8 +28,8 @@ DEFAULT_SIZE = "medium"
 # Standing body height / podium diameter, as in the window at 1920×1080 (0.61·1080 / 930.6 px),
 # so poses look the same size relative to the podium in both modes.
 BODY_TO_PODIUM = 0.708
-# Experimental "file" sizing (placement.js FILE_FIGURE_SHARE): one scale for every picture,
-# as drawn in its file, only centred on the podium.
+# "file" sizing, the default (placement.js FILE_FIGURE_SHARE): one scale for every picture,
+# as drawn in its file, only centred on the podium. "body": one estimated body size.
 FILE_FIGURE_SHARE = 0.86
 TRANSITION_S = 0.28
 SHADOW_OPACITY = 0.36
@@ -67,7 +67,7 @@ def support_data(pose):
     return contacts, (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
 
 
-def fit_placement(pose, meta, sizing="body"):
+def fit_placement(pose, meta, sizing="file"):
     """Scale (canvas px per source px) and bbox centre (px from the canvas centre, y up)."""
     x1, y1, x2, y2 = pose["box"]
     width, height = meta["width"], meta["height"]
@@ -144,7 +144,7 @@ def order(items, prefs, library):
 class Stage:
     """Podium sprite plus pose layers at one window size."""
 
-    def __init__(self, folder: Path, height: int, sizing: str = "body"):
+    def __init__(self, folder: Path, height: int, sizing: str = "file"):
         self.meta = load_meta(folder)
         self.sizing = sizing
         self.k = height / self.meta["height"]
@@ -326,7 +326,7 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
             30: "window", 31: "close"}
 
     view = {"stage": None, "index": None, "layers": None, "anim": None, "frame": None, "hwnd": None,
-            "sizing": prefs.get("sizing") if prefs.get("sizing") in ("body", "file") else "body"}
+            "sizing": prefs.get("sizing") if prefs.get("sizing") in ("body", "file") else "file"}
     cache: dict[str, Image.Image] = {}
     lock = threading.Lock()
 
@@ -360,7 +360,7 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
         if view["hwnd"]:
             left, top, right, bottom = app.work_area(view["hwnd"])
             height = min(height, bottom - top)
-        view["stage"] = Stage(resource_dir / "web" / "desktop", height, view.get("sizing", "body"))
+        view["stage"] = Stage(resource_dir / "web" / "desktop", height, view.get("sizing", "file"))
 
     def keep_on_screen():
         """Moves the podium fully into the nearest monitor's work area (after monitor changes, or
@@ -484,7 +484,7 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
         for ident, name, title in ((10, "small", "Маленький"), (11, "medium", "Средний"), (12, "large", "Большой")):
             add(0x8 if settings["size"] == name else 0, ident, f"Размер: {title}")
         add(0x8 if settings["on_top"] else 0, 20, "Поверх всех окон")
-        add(0x8 if view["sizing"] == "file" else 0, 21, "Масштаб как в файле (эксперимент)")
+        add(0x8 if view["sizing"] == "body" else 0, 21, "Единый размер тела")
         add(0x800, 0, None)
         add(0, 30, "Открыть окно PoseStage")
         add(0, 31, "Закрыть\tEsc")

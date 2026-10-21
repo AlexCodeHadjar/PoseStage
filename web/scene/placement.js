@@ -127,12 +127,13 @@ export function bodyScale(pose, mapping) {
   return ((STATURE_SHARE * mapping.height) / stature) * adjust;
 }
 
-// Experimental "file" sizing: every picture gets the same scale, exactly as drawn in its file,
-// with only its support centred on the podium (no body estimate, no correction, no limits).
-// A standing figure fills about this share of its PNG's height in the bundled set, so it keeps
-// the size it has in "body" sizing.
+// Pose sizing. "file" (default): every picture gets the same scale, exactly as drawn in its
+// file, with only its support centred on the podium (no body estimate, no correction, no
+// limits). "body": one estimated body size per collection, shrunk only to fit the podium.
+// A standing figure fills about this share of its PNG's height in the bundled set, so it has
+// the same size in both modes.
 export const FILE_FIGURE_SHARE = 0.86;
-let sizing = 'body';
+let sizing = 'file';
 
 export function setSizing(mode) {
   if (mode === 'body' || mode === 'file') sizing = mode;

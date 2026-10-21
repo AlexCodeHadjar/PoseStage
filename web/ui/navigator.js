@@ -704,6 +704,10 @@ export function install(app) {
   function nudgeScale(index, ratio) {
     const pose = poses[index];
     if (!pose) return;
+    if (app.view.sizing?.() === 'file') {  // the picture keeps its file scale in this mode
+      toast('Поправка размера работает в режиме «единый размер тела» — клавиша M');
+      return;
+    }
     const before = pose.scale_adjust > 0 ? pose.scale_adjust : 1;
     const next = ratio === null ? 1 : Math.min(2, Math.max(0.5, Math.round(before * ratio * 1000) / 1000));
     if (next === before) {

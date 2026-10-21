@@ -36,7 +36,7 @@ export function install(app) {
     on_top: false,
     compact: false,
     parallax: 'soft',
-    sizing: 'body',
+    sizing: 'file',
     background: { mode: 'studio', id: null, blur: 0, dim: 0 },
   };
   let backgrounds = []; // [{id, url, w, h}]: copies in %APPDATA%\PoseStage\backgrounds
@@ -556,7 +556,7 @@ export function install(app) {
     showToast(`Параллакс: ${PARALLAX_NAMES[state.parallax]}`);
   }
 
-  // --- 4a. Pose sizing: one body size, or exactly as drawn in the files (experiment) -
+  // --- 4a. Pose sizing: exactly as drawn in the files (default), or one body size ---
   function applySizing() {
     if (typeof app.view.setSizing === 'function') state.sizing = app.view.setSizing(state.sizing);
   }
@@ -567,8 +567,8 @@ export function install(app) {
     applySizing();
     save({ sizing: state.sizing });
     showToast(state.sizing === 'file'
-      ? 'Масштаб: как в файле (эксперимент) — только по центру подиума'
-      : 'Масштаб: единый размер тела');
+      ? 'Масштаб: как в файле — рисунок без изменений, по центру подиума'
+      : 'Масштаб: единый размер тела ([ / ] — поправка)');
   }
 
   // --- 4b. Background: studio or a stored picture (glass popover) ------------
@@ -928,7 +928,7 @@ export function install(app) {
     { keys: ['KeyL'], title: 'Сетка: выкл → трети → пропорции (8 голов)', handler: once(cycleGrid) },
     { keys: ['KeyB'], title: 'Фон: студия или изображение', handler: once(togglePanel) },
     { keys: ['KeyP'], title: 'Параллакс: выкл → мягкий → сильный', handler: once(cycleParallax) },
-    { keys: ['KeyM'], title: 'Масштаб поз: единый размер тела ↔ как в файле (эксперимент)', handler: once(toggleSizing) },
+    { keys: ['KeyM'], title: 'Масштаб поз: как в файле ↔ единый размер тела', handler: once(toggleSizing) },
     { keys: ['Equal', 'Shift+Equal', 'NumpadAdd'], title: 'Приблизить', handler: () => zoomBy(KEY_STEP, centerX(), centerY()) },
     { keys: ['Minus', 'NumpadSubtract'], title: 'Отдалить', handler: () => zoomBy(1 / KEY_STEP, centerX(), centerY()) },
     { keys: ['KeyZ'], title: 'Сбросить масштаб и панораму', handler: once(() => resetZoom()) },

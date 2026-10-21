@@ -757,7 +757,7 @@ const app = {
       return parallaxMode;
     },
     parallax: () => parallaxMode,
-    // Pose sizing "body" (one body size, placement limits) | "file" (as drawn, centred only).
+    // Pose sizing "file" (default: as drawn, centred only) | "body" (one body size, limits).
     setSizing(mode) {
       const before = getSizing();
       const after = setSizing(mode);
