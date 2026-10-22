@@ -5,6 +5,7 @@ import { createStage, frameCamera, orbitCamera } from './scene/stage.js';
 import { createPost } from './scene/post.js';
 import { Figure } from './scene/figure.js';
 import { complete, inBetween, groove, curve, smooth, createDanceRig, jointPoints, cycle, STYLES } from './scene/dance.js';
+import { estimateJoints } from './scene/idle.js';
 import { setSizing, getSizing } from './scene/placement.js';
 import { TextureCache } from './scene/textures.js';
 import { createEmitter } from './core/events.js';
@@ -312,11 +313,14 @@ async function begin(target, direction) {
   next.fit(camera);
   next.face(camera);
   next.uniforms.uReveal.value = 0;
+  // The idle rig of a new pose costs ~10 ms to build: do it now, not in the transition's first frame.
+  if (idleOn) next.animate(camera, performance.now() / 1000);
   transition = {
     old: current,
     next,
     target,
     time: 0,
+    fresh: true, // the first frame may follow a long task (texture upload): do not skip ahead
     speed: queued !== null ? FAST_SPEED : 1,
     fromAngle: angle,
     toAngle: angle + (direction * Math.PI) / 4,
@@ -588,7 +592,8 @@ function renderFrame(now) {
 
   if (transition) {
     const t = transition;
-    t.time += dt * t.speed;
+    t.time += (t.fresh ? Math.min(dt, 1 / 60) : dt) * t.speed;
+    t.fresh = false;
     const progress = clamp(t.time / TRANSITION_SECONDS);
     // Old drawing erases first; the new one starts revealing a quarter in.
     t.old.uniforms.uErase.value = ease(progress / 0.65);
@@ -746,11 +751,11 @@ function showFigure(figure, on) {
 
 // phrase: {name, loop, poses: [{file, mirror, pose}]}; options: {bpm, style: "soft"|"groove", speed}.
 async function playDance(phrase, options = {}) {
-  const entries = (phrase?.poses || []).filter((entry) => entry?.pose?.url && Array.isArray(entry.pose.box));
+  // A pose without a skeleton dances on the one estimated from its box (as the idle animation does).
+  const entries = (phrase?.poses || [])
+    .filter((entry) => entry?.pose?.url && Array.isArray(entry.pose.box))
+    .map((entry) => (entry.pose.joints?.version === 2 ? entry : { ...entry, pose: { ...entry.pose, joints: estimateJoints(entry.pose) } }));
   if (entries.length < 2 || !studio) throw new Error('В связке меньше двух поз');
-  if (entries.some((entry) => !jointPoints(entry.pose).pelvis || !jointPoints(entry.pose).chest)) {
-    throw new Error('У позы связки нет скелета');
-  }
   stopDance();
   const token = ++danceToken;
   const loads = new Map();
@@ -759,6 +764,7 @@ async function playDance(phrase, options = {}) {
       loads.set(entry.pose.url, danceLoader.loadAsync(entry.pose.url).then((texture) => {
         texture.colorSpace = THREE.SRGBColorSpace;
         texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+        renderer.initTexture(texture); // upload now, not mid-dance
         return texture;
       }));
     }
@@ -944,6 +950,16 @@ const app = {
     },
     setStyle(style) {
       if (dance && Object.hasOwn(STYLES, style)) dance.style = style;
+      events.emit('dance', { phase: 'state', ...danceState() });
+      return danceState();
+    },
+    // Tempo, beats per minute (60…200); the dance keeps its place in the count.
+    setBpm(bpm) {
+      const value = Math.round(Number(bpm));
+      if (dance && value >= 60 && value <= 200) {
+        dance.time *= dance.bpm / value;
+        dance.bpm = value;
+      }
       events.emit('dance', { phase: 'state', ...danceState() });
       return danceState();
     },

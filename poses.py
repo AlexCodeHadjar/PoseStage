@@ -31,6 +31,8 @@ THUMB_MAX_BYTES = 256 * 1024 * 1024  # LRU cap for DATA_DIR/thumbs
 THUMB_GRACE, THUMB_TOUCH = 600, 300  # never prune thumbnails used within 10 min; refresh mtime every 5
 MAX_TAGS, MAX_TAG_LENGTH = 16, 32
 MAX_SEARCH_LENGTH = 100  # view_prefs filter.search
+DANCE_STYLES, DANCE_SPEEDS, DANCE_BPM = ("soft", "groove"), (1, .5, .25), (60, 200)
+MAX_SEQUENCES, MAX_SEQUENCE_POSES, MAX_SEQUENCE_NAME = 200, 16, 60
 SCALE_LIMITS = (.5, 2.0)  # user's per-pose size correction ([ and ] keys)
 DEFAULT_REFERENCE = 2.6  # stature / sqrt(silhouette area) when a collection has no standing poses
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
@@ -515,6 +517,72 @@ def set_joint_override(cid: str, relative: str, joints):
     update_section("joint_overrides.json", cid, change)
 
 
+# --- Own dance phrases (docs/DANCE.md, stage 4) -------------------------------------------------
+
+def _valid_sequence(value) -> bool:
+    return (isinstance(value, dict) and isinstance(value.get("id"), str) and isinstance(value.get("name"), str)
+            and type(value.get("loop")) is bool and isinstance(value.get("poses"), list)
+            and all(isinstance(e, dict) and isinstance(e.get("file"), str) and type(e.get("mirror")) is bool
+                    for e in value["poses"]))
+
+
+def read_sequences(cid: str | None) -> list[dict]:
+    """The user's own phrases of a collection: [{id, name, loop, poses: [{file, mirror}]}]."""
+    items = read_section("sequences.json", cid).get("items")
+    return [s for s in items if _valid_sequence(s)] if isinstance(items, list) else []
+
+
+def clean_sequence(sequence, files) -> dict:
+    """A phrase to save, checked against the collection's `files`; ValueError if unusable."""
+    if not isinstance(sequence, dict):
+        raise ValueError("sequence must be an object")
+    name = " ".join(str(sequence.get("name") or "").split())[:MAX_SEQUENCE_NAME].strip()
+    if not name:
+        raise ValueError("Связке нужно название")
+    raw = sequence.get("poses")
+    if not isinstance(raw, list):
+        raise ValueError("poses must be a list")
+    entries = []
+    for entry in raw:
+        if not (isinstance(entry, dict) and isinstance(entry.get("file"), str) and entry["file"] in files):
+            raise ValueError(f"Позы нет в коллекции: {entry.get('file') if isinstance(entry, dict) else entry!r}")
+        entries.append({"file": entry["file"], "mirror": entry.get("mirror") is True})
+    if not 2 <= len(entries) <= MAX_SEQUENCE_POSES:
+        raise ValueError(f"В связке должно быть от 2 до {MAX_SEQUENCE_POSES} поз")
+    sid = sequence.get("id")
+    if not (isinstance(sid, str) and re.fullmatch(r"[0-9a-f]{8,32}", sid)):
+        sid = os.urandom(6).hex()
+    return {"id": sid, "name": name, "loop": sequence.get("loop") is True, "poses": entries}
+
+
+def save_sequence(cid: str, sequence, files) -> dict:
+    """Adds or replaces (same id) one of the collection's own phrases; returns it as saved."""
+    clean = clean_sequence(sequence, files)
+
+    def change(section):
+        items = [s for s in section.get("items", []) if _valid_sequence(s) and s["id"] != clean["id"]]
+        position = next((i for i, s in enumerate(section.get("items", []))
+                         if isinstance(s, dict) and s.get("id") == clean["id"]), len(items))
+        items.insert(min(position, len(items)), clean)
+        if len(items) > MAX_SEQUENCES:
+            raise ValueError(f"Не больше {MAX_SEQUENCES} своих связок")
+        section["items"] = items
+    update_section("sequences.json", cid, change)
+    return clean
+
+
+def delete_sequence(cid: str, sequence_id: str) -> bool:
+    def change(section):
+        items = [s for s in section.get("items", []) if _valid_sequence(s)]
+        kept = [s for s in items if s["id"] != sequence_id]
+        if kept:
+            section["items"] = kept
+        else:
+            section.clear()
+        return len(kept) != len(items)
+    return update_section("sequences.json", cid, change)
+
+
 def normalize_tags(tags) -> list[str]:
     if not isinstance(tags, list):
         raise ValueError("tags must be a list of strings")
@@ -612,7 +680,24 @@ def clean_view_prefs(prefs) -> dict:
     background = clean_background_prefs(prefs.get("background"))
     if background:
         result["background"] = background
+    dance = clean_dance_prefs(prefs.get("dance"))
+    if dance:
+        result["dance"] = dance
     return result
+
+
+def clean_dance_prefs(raw) -> dict:
+    """{style: "soft"|"groove", speed: 1|0.5|0.25, bpm: 60…200 (integer)}, valid keys only."""
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    if raw.get("style") in DANCE_STYLES:
+        out["style"] = raw["style"]
+    if type(raw.get("speed")) in (int, float) and raw["speed"] in DANCE_SPEEDS:
+        out["speed"] = raw["speed"]
+    if type(raw.get("bpm")) is int and DANCE_BPM[0] <= raw["bpm"] <= DANCE_BPM[1]:
+        out["bpm"] = raw["bpm"]
+    return out
 
 
 def read_view_prefs() -> dict:
@@ -624,7 +709,7 @@ def save_view_prefs(prefs) -> dict:
     update = clean_view_prefs(prefs)
     with _store_lock:
         current = read_view_prefs()
-        for key in ("filter", "background"):
+        for key in ("filter", "background", "dance"):
             if key in update:
                 update[key] = {**current.get(key, {}), **update[key]}
         current.update(update)

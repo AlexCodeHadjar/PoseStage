@@ -9,7 +9,7 @@ import { frameCamera } from '../../web/scene/stage.js';
 import { groundMapping, fitPlacement, bodyScale, STATURE_SHARE, SUPPORT_RADIUS, setSizing, FILE_FIGURE_SHARE } from '../../web/scene/placement.js';
 import { Figure } from '../../web/scene/figure.js';
 import { createRig, estimateJoints, templateJoints, IDLE_LOOP, JOINT_IDS } from '../../web/scene/idle.js';
-import { complete, inBetween, groove, curve, createDanceRig, jointPoints, cycle } from '../../web/scene/dance.js';
+import { complete, inBetween, groove, curve, createDanceRig, jointPoints, cycle, mirrorPose } from '../../web/scene/dance.js';
 import { DANCE_REFERENCE } from './dance_reference.js';
 import { TextureCache } from '../../web/scene/textures.js';
 import { stepTarget, normalizeOrder, edgeTarget } from '../../web/core/navigation.js';
@@ -165,6 +165,27 @@ test('dance transitions (scene/dance.js) match dance_motion.py', () => {
   deepEqual(cycle(4, false), [0, 1, 2, 3, 2, 1, 0]);
   const pose = FIXTURE_POSES[1];
   deepEqual(Object.keys(jointPoints({ ...pose, joints: templateJoints(pose, 'front') })).length, 16);
+  // mirrorPose = dance.mirror_pose: box and profile flip, sides swap, twice gives the pose back.
+  const original = { ...pose, joints: templateJoints(pose, 'side') };
+  const flipped = mirrorPose(original);
+  deepEqual(flipped.box, [pose.w - pose.box[2], pose.box[1], pose.w - pose.box[0], pose.box[3]], 'box');
+  equal(flipped.joints.points.wrist_l.state, 'hidden', 'the hidden far side becomes the left');
+  equal(flipped.joints.points.shoulder_l.xy[0], pose.w - original.joints.points.shoulder_r.xy[0]);
+  const twice = mirrorPose(flipped);
+  deepEqual(twice.joints, original.joints, 'joints back');
+  deepEqual(twice.box, original.box, 'box back');
+  deepEqual(twice.support.profile, [...original.support.profile].sort((a, b) => a[0] - b[0] || a[1] - b[1]), 'profile back');
+});
+
+test('TextureCache uploads a loaded texture right away (no hitch when the transition starts)', async () => {
+  const uploaded = [];
+  const renderer = { capabilities: { getMaxAnisotropy: () => 1 }, initTexture: (texture) => uploaded.push(texture) };
+  const cache = new TextureCache([{ url: 'a.png', file: 'a.png' }], renderer, () => {});
+  const texture = new THREE.Texture();
+  cache.loader = { loadAsync: async () => texture };
+  equal(await cache.get(0), texture);
+  deepEqual(uploaded, [texture]);
+  cache.dispose();
 });
 
 test('Figure.animate bends the drawing and restores it', () => {

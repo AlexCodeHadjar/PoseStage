@@ -276,6 +276,21 @@ class Api:
                                  name="dances").start()
             return {"status": state["status"], "phrases": state["phrases"], "error": state["error"]}
 
+    def get_sequences(self):
+        """The user's own phrases of the active collection: [{id, name, loop, poses: [{file, mirror}]}]."""
+        return poses.read_sequences(self._catalog.snapshot()[0])
+
+    def save_sequence(self, sequence):
+        """Adds or replaces (same id) an own phrase; returns it. Bad input: ValueError."""
+        cid, items = self._catalog.snapshot()
+        if not cid:
+            raise ValueError("Нет активной коллекции")
+        return poses.save_sequence(cid, sequence, {pose["file"] for pose in items})
+
+    def delete_sequence(self, sequence_id):
+        cid = self._catalog.snapshot()[0]
+        return bool(cid and isinstance(sequence_id, str) and poses.delete_sequence(cid, sequence_id))
+
     def _find_dances(self, digest, items):
         try:
             styles = dance.load_styles(items, self._catalog.resolve)

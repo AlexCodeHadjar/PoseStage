@@ -489,5 +489,75 @@ class DanceApiTests(unittest.TestCase):
         self.assertEqual((result["status"], result["error"], result["phrases"]), ("error", "boom", []))
 
 
+class SequenceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old = poses.DATA_DIR
+        poses.DATA_DIR = Path(self.tmp.name)
+        self.files = {"a.png", "b.png", "c.png"}
+
+    def tearDown(self):
+        poses.DATA_DIR = self.old
+        self.tmp.cleanup()
+
+    def test_save_replace_delete(self):
+        first = poses.save_sequence("cid", {"name": "  Моя   связка ", "loop": True,
+                                            "poses": [{"file": "a.png"}, {"file": "b.png", "mirror": True}]}, self.files)
+        self.assertEqual(first["name"], "Моя связка")
+        self.assertEqual(first["poses"], [{"file": "a.png", "mirror": False}, {"file": "b.png", "mirror": True}])
+        self.assertRegex(first["id"], r"^[0-9a-f]{12}$")
+        second = poses.save_sequence("cid", {"name": "Вторая", "poses": [{"file": "c.png"}, {"file": "a.png"}]}, self.files)
+        changed = poses.save_sequence("cid", dict(first, name="Переименована", loop=False), self.files)
+        self.assertEqual(changed["id"], first["id"])
+        self.assertEqual([s["name"] for s in poses.read_sequences("cid")], ["Переименована", "Вторая"])  # order kept
+        self.assertEqual(poses.read_sequences("other"), [])
+        self.assertTrue(poses.delete_sequence("cid", second["id"]))
+        self.assertFalse(poses.delete_sequence("cid", second["id"]))
+        self.assertTrue(poses.delete_sequence("cid", first["id"]))
+        self.assertNotIn("cid", poses.read_dict(poses.DATA_DIR / "sequences.json"))
+
+    def test_bad_sequences_are_refused(self):
+        bad = [
+            None,
+            {"name": "", "poses": [{"file": "a.png"}, {"file": "b.png"}]},
+            {"name": "x", "poses": [{"file": "a.png"}]},
+            {"name": "x", "poses": [{"file": "a.png"}, {"file": "gone.png"}]},
+            {"name": "x", "poses": "a.png"},
+            {"name": "x", "poses": [{"file": "a.png"}] * (poses.MAX_SEQUENCE_POSES + 1)},
+        ]
+        for sequence in bad:
+            with self.assertRaises(ValueError, msg=repr(sequence)):
+                poses.save_sequence("cid", sequence, self.files)
+        odd = poses.save_sequence("cid", {"id": "../x", "name": "x" * 99, "loop": "yes",
+                                          "poses": [{"file": "a.png", "mirror": 1}, {"file": "b.png"}]}, self.files)
+        self.assertNotEqual(odd["id"], "../x")
+        self.assertEqual((len(odd["name"]), odd["loop"], odd["poses"][0]["mirror"]), (poses.MAX_SEQUENCE_NAME, False, False))
+        poses.write_json(poses.DATA_DIR / "sequences.json", {"cid": {"items": [{"id": 1}, odd, "junk"]}})
+        self.assertEqual(poses.read_sequences("cid"), [odd])
+
+    def test_dance_prefs(self):
+        self.assertEqual(poses.clean_view_prefs({"dance": {"style": "groove", "speed": .5, "bpm": 130}})["dance"],
+                         {"style": "groove", "speed": .5, "bpm": 130})
+        self.assertNotIn("dance", poses.clean_view_prefs({"dance": {"style": "wild", "speed": True, "bpm": 130.5}}))
+        self.assertEqual(poses.clean_view_prefs({"dance": {"bpm": 300, "speed": 1}})["dance"], {"speed": 1})
+        poses.save_view_prefs({"dance": {"style": "groove"}})
+        self.assertEqual(poses.save_view_prefs({"dance": {"bpm": 100}})["dance"], {"style": "groove", "bpm": 100})
+
+    def test_api(self):
+        items = [{"file": f} for f in sorted(self.files)]
+
+        class Catalog:
+            def snapshot(self):
+                return "cid", items
+        api = app.Api(Catalog())
+        saved = api.save_sequence({"name": "Связка", "poses": [{"file": "a.png"}, {"file": "c.png"}]})
+        self.assertEqual(api.get_sequences(), [saved])
+        with self.assertRaises(ValueError):
+            api.save_sequence({"name": "Связка", "poses": [{"file": "a.png"}, {"file": "zzz.png"}]})
+        self.assertFalse(api.delete_sequence(None))
+        self.assertTrue(api.delete_sequence(saved["id"]))
+        self.assertEqual(api.get_sequences(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

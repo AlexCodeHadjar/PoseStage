@@ -257,3 +257,279 @@ body.dancing nav .arrow {
   opacity: 0;
   pointer-events: none;
 }
+
+/* --- Own phrases and the editor ---------------------------------------------------- */
+.dance-section {
+  padding: 10px 12px 4px;
+  color: #8f949b;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.dance-row.own .dance-name::before {
+  content: '★ ';
+  color: #ffd27a;
+}
+
+.dance-edit {
+  flex: none;
+  opacity: 0.55;
+}
+
+.dance-row:hover .dance-edit,
+.dance-row.selected .dance-edit {
+  opacity: 1;
+}
+
+.dance-layer.editing {
+  align-items: flex-end;
+  background: transparent;
+  pointer-events: none;
+}
+
+.dance-layer.editing .dance-panel {
+  max-height: 48vh;
+  pointer-events: auto;
+}
+
+.dance-layer.editing .dance-hint {
+  display: none;
+}
+
+.dance-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 12px 18px 14px;
+}
+
+.dance-editor[hidden],
+.dance-list[hidden] {
+  display: none;
+}
+
+.dance-editor-top,
+.dance-editor-bottom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.dance-input {
+  flex: 1;
+  min-width: 180px;
+  height: 30px;
+  padding: 0 12px;
+  color: #e4e6e9;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  font: 13px Segoe UI, sans-serif;
+  outline: none;
+}
+
+.dance-input:focus {
+  border-color: rgba(130, 170, 255, 0.6);
+}
+
+.dance-check {
+  color: #c9ccd0;
+  white-space: nowrap;
+}
+
+.dance-cards {
+  display: flex;
+  gap: 8px;
+  min-height: 150px;
+  padding-bottom: 4px;
+  overflow-x: auto;
+}
+
+.dance-card {
+  position: relative;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  width: 92px;
+  padding: 6px 4px 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.dance-card.missing {
+  border-color: rgba(255, 120, 110, 0.45);
+}
+
+.dance-card-img {
+  width: 80px;
+  height: 108px;
+  object-fit: contain;
+}
+
+.dance-card-img.mirror {
+  transform: scaleX(-1);
+}
+
+.dance-card-num {
+  position: absolute;
+  top: 4px;
+  left: 7px;
+  color: #9a9ea5;
+  font-size: 11px;
+}
+
+.dance-card-tools {
+  display: flex;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.dance-mini {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: #c9ccd0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.dance-mini:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.dance-mini:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.dance-mini.on {
+  border-color: rgba(130, 170, 255, 0.55);
+  color: #cfe0ff;
+}
+
+.dance-note {
+  color: #9a9ea5;
+}
+
+.dance-btn.primary {
+  border-color: rgba(130, 170, 255, 0.55);
+  background: rgba(110, 150, 255, 0.2);
+  color: #e6eeff;
+}
+
+.dance-btn.danger {
+  border-color: rgba(255, 120, 110, 0.45);
+  background: rgba(255, 100, 90, 0.14);
+  color: #ffd6d2;
+}
+
+.dance-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.dance-btn[hidden] {
+  display: none;
+}
+
+.dance-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 70px;
+  z-index: 120;
+  max-width: min(80vw, 560px);
+  padding: 8px 16px;
+  color: #eceef0;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  background: rgba(30, 32, 36, 0.86);
+  font: 13.5px Segoe UI, sans-serif;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 8px);
+  transition: opacity 0.2s, transform 0.2s;
+}
+
+.dance-toast.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.dance-toast.error {
+  border-color: rgba(255, 120, 110, 0.4);
+  color: #ffd6d2;
+}
+
+/* Narrow window (compact mode ~480 px): status on its own line, thumbnails under the name. */
+.dance-btn {
+  white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  .dance-layer {
+    padding: 10px;
+  }
+
+  .dance-header {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px 12px 10px;
+  }
+
+  .dance-status {
+    order: 5;
+    width: 100%;
+    font-size: 12px;
+  }
+
+  .dance-row {
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    padding: 8px;
+  }
+
+  .dance-info {
+    flex: 1;
+    width: auto;
+    min-width: 0;
+  }
+
+  .dance-strip {
+    order: 5;
+    flex-basis: 100%;
+    overflow-x: auto;
+  }
+
+  .dance-thumb {
+    width: 48px;
+    height: 66px;
+  }
+
+  .dance-editor {
+    padding: 10px 12px 12px;
+  }
+
+  .dance-hud {
+    bottom: 10px;
+    gap: 4px;
+    max-width: calc(100vw - 20px);
+    padding: 5px 6px 5px 10px;
+  }
+
+  .dance-hud-name {
+    max-width: 120px;
+  }
+
+  .dance-hud .dance-btn {
+    min-width: 30px;
+    padding: 0 7px;
+  }
+}

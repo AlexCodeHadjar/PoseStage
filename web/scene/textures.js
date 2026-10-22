@@ -43,6 +43,13 @@ export class TextureCache {
           throw new Error('Evicted preload');
         }
         entry.texture = texture;
+        // Decode and upload to the GPU (with mipmaps) now, while the pose waits in the cache —
+        // otherwise it happens in the first frame of the transition and the figure jerks.
+        try {
+          this.renderer.initTexture?.(texture);
+        } catch (error) {
+          this.report(`initTexture ${this.poses[index].file}: ${error}`);
+        }
         return texture;
       }).catch((error) => {
         if (this.entries.get(index) === entry) {

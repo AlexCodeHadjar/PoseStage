@@ -84,6 +84,13 @@ type Dance = {
 };
 ```
 
+Свои связки (по коллекции, `%APPDATA%\PoseStage\sequences.json`):
+
+- `get_sequences() -> Sequence[]`, где `Sequence = {id, name, loop, poses: {file, mirror}[]}`.
+- `save_sequence(sequence) -> Sequence` — добавляет или заменяет (тот же `id`). Название 1–60 символов,
+  от 2 до 16 поз, только файлы текущей коллекции; иначе `ValueError`. Новый `id` выдаёт бэкенд.
+- `delete_sequence(id) -> bool`.
+
 ### Коллекции (несколько папок)
 
 ```ts
@@ -111,7 +118,8 @@ type Collection = {id: string; name: string; folder: string; active: boolean};
   Хранятся в `view_prefs.json`; бэкенд принимает только известные ключи с проверкой типов:
   `flip: bool, gray: bool, grid: "off"|"thirds"|"proportions", on_top: bool, compact: bool,
   filter: {mode: "all"|"feet"|"kneel"|"ground", favorites: bool, tag: string|null, search: string},
-  parallax: "off"|"soft"|"strong", sizing: "body"|"file", idle: bool, background: {mode: "studio"|"image", id: string|null, blur: 0…24, dim: 0…0.85}`.
+  parallax: "off"|"soft"|"strong", sizing: "body"|"file", idle: bool, background: {mode: "studio"|"image", id: string|null, blur: 0…24, dim: 0…0.85},
+  dance: {style: "soft"|"groove", speed: 1|0.5|0.25, bpm: 60…200 (целое)}`.
   `save_view_prefs` сливает частичный объект с сохранённым; `get_view_prefs` при первом
   запуске возвращает `{}` — значения по умолчанию задаёт фронтенд.
 
@@ -176,6 +184,7 @@ type App = {
     setPaused(on: boolean): DanceState | null;
     setSpeed(speed: 1|0.5|0.25): DanceState | null;
     setStyle(style: "soft"|"groove"): DanceState | null;
+    setBpm(bpm: number): DanceState | null;  // 60…200; место в счёте сохраняется
     speeds(): number[];
   };
   shortcuts: {

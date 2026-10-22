@@ -211,6 +211,27 @@ export function createDanceRig(rest) {
   };
 }
 
+// The pose flipped left-right: box, support profile and skeleton (sides swapped), as
+// dance.mirror_pose does on the backend. The texture is flipped by Figure({mirror: true}).
+export function mirrorPose(pose) {
+  const w = pose.w;
+  const [x1, y1, x2, y2] = pose.box;
+  const swap = (id) => (id.endsWith('_l') ? `${id.slice(0, -2)}_r` : id.endsWith('_r') ? `${id.slice(0, -2)}_l` : id);
+  const out = { ...pose, box: [w - x2, y1, w - x1, y2] };
+  if (Array.isArray(pose.support?.profile)) {
+    out.support = { ...pose.support, profile: pose.support.profile.map(([x, y]) => [w - x, y]).sort((a, b) => a[0] - b[0] || a[1] - b[1]) };
+  }
+  if (pose.joints?.points) {
+    out.joints = {
+      ...pose.joints,
+      points: Object.fromEntries(Object.entries(pose.joints.points).map(([id, point]) => [
+        swap(id), point?.xy ? { ...point, xy: [w - point.xy[0], point.xy[1]] } : { ...point },
+      ])),
+    };
+  }
+  return out;
+}
+
 // Order of the poses in one cycle: a loop goes round; an open phrase dances there and back.
 export function cycle(count, loop) {
   const there = [...Array(count).keys()];
