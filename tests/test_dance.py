@@ -20,6 +20,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageOps
 import app
 import dance
 import dance_motion
+import desktop
 import poses
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -557,6 +558,63 @@ class SequenceTests(unittest.TestCase):
         self.assertFalse(api.delete_sequence(None))
         self.assertTrue(api.delete_sequence(saved["id"]))
         self.assertEqual(api.get_sequences(), [])
+
+
+class DesktopDanceTests(unittest.TestCase):
+    def entries(self, count=3):
+        out = []
+        for i in range(count):
+            p = pose(f"p{i}.png", skeleton(math.pi / 2 - .4 * i))
+            out.append((p, drawing(p["joints"])))
+        return out
+
+    def test_frames_of_a_cycle(self):
+        stage = desktop.Stage(ROOT / "web" / "desktop", 300, "file")
+        frames = desktop.DanceFrames(stage, self.entries(), loop=False, style="soft", bpm=120, fps=10)
+        self.assertEqual(frames.order, [0, 1, 2, 1, 0])  # there and back
+        self.assertEqual(frames.count, 4 * 5)  # four counts of half a second at 10 fps
+        self.assertFalse(frames.done())
+        frames.render()
+        self.assertIsNone(frames.error)
+        self.assertTrue(frames.done())
+        self.assertEqual(frames.progress(), 1)
+        self.assertTrue(all(isinstance(f, desktop.Sprite) and isinstance(s, desktop.Sprite) for f, s in frames.frames))
+        # The end of counts 1 and 3 (0 → 1, 2 → 1): pose 1 holds still, drawn once.
+        self.assertIs(frames.frames[4], frames.frames[14])
+        self.assertIsNot(frames.frames[3], frames.frames[4])  # still moving
+        self.assertIs(frames.at(0), frames.frames[0])
+        self.assertIs(frames.at(frames.count / 10 + .05), frames.frames[0])  # the cycle repeats
+        left, top, right, bottom = frames.region
+        for figure, shadow in frames.frames:
+            for sprite in (figure, shadow):
+                self.assertGreaterEqual(sprite.x, left - 1)
+                self.assertLessEqual(min(stage.size[0], sprite.x + sprite.image.width), right)
+
+    def test_groove_warps_every_frame_and_cancel_stops(self):
+        stage = desktop.Stage(ROOT / "web" / "desktop", 300, "file")
+        frames = desktop.DanceFrames(stage, self.entries(2), loop=True, style="groove", bpm=120, fps=8)
+        frames.render()
+        self.assertEqual(len({id(f) for f, _ in frames.frames}), frames.count)
+        cancelled = desktop.DanceFrames(stage, self.entries(2), loop=True, style="soft", bpm=120, fps=8)
+        cancelled.cancelled = True
+        cancelled.render()
+        self.assertEqual(cancelled.ready, 0)
+
+    def test_errors_are_kept_not_raised(self):
+        stage = desktop.Stage(ROOT / "web" / "desktop", 300, "file")
+        frames = desktop.DanceFrames(stage, self.entries(2), loop=True)
+        with mock.patch.object(dance_motion, "Transition", side_effect=RuntimeError("boom")), mock.patch("logging.exception"):
+            frames.render()
+        self.assertEqual(str(frames.error), "boom")
+        self.assertTrue(frames.cancelled)
+
+    def test_progress_frame_draws_a_bar(self):
+        stage = desktop.Stage(ROOT / "web" / "desktop", 300, "file")
+        p, image = self.entries(1)[0]
+        prepared = stage.prepare(p, image)
+        empty, half = desktop.progress_frame(stage, prepared, 0), desktop.progress_frame(stage, prepared, .5)
+        self.assertEqual(empty.size, stage.size)
+        self.assertIsNotNone(ImageChops.difference(empty, half).getbbox())
 
 
 if __name__ == "__main__":

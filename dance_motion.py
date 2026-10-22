@@ -177,6 +177,37 @@ class Warp:
             ny += w * (p0[1] + s * dx + c * dy)
         return nx, ny
 
+    def _blend(self, px, py, x, y, steps):
+        """Inverse with the skin weights frozen at the current guess: the map is then affine
+        (a weighted sum of the bones' rotations), solved exactly; the weights are re-read at
+        the answer and it repeats. Converges in 2-3 steps where the weights change slowly."""
+        for _ in range(steps):
+            a11 = a12 = a21 = a22 = b1 = b2 = 0.0
+            for w, child in self.skin.weights(px, py):
+                move = self.moves.get(child)
+                if move is None:
+                    a11 += w
+                    a22 += w
+                    continue
+                c, s, r0, p0 = move
+                a11 += w * c
+                a12 -= w * s
+                a21 += w * s
+                a22 += w * c
+                b1 += w * (p0[0] - c * r0[0] + s * r0[1])
+                b2 += w * (p0[1] - s * r0[0] - c * r0[1])
+            det = a11 * a22 - a12 * a21
+            if abs(det) < 1e-6:
+                break
+            ex, ey = x - b1, y - b2
+            nx, ny = (a22 * ex - a12 * ey) / det, (a11 * ey - a21 * ex) / det
+            done = abs(nx - px) + abs(ny - py) < .2
+            px, py = nx, ny
+            if done:
+                break
+        fx, fy = self.forward(px, py)
+        return px, py, math.hypot(x - fx, y - fy)
+
     def _newton(self, px, py, x, y, steps):
         for _ in range(steps):
             fx, fy = self.forward(px, py)
@@ -198,39 +229,50 @@ class Warp:
         fx, fy = self.forward(px, py)
         return px, py, math.hypot(x - fx, y - fy)
 
-    def inverse(self, x, y):
-        """Rest point p with F(p) = (x, y). Newton's method started from the inverse of the
-        nearest posed bones' own motion — exact for large rotations, where a plain fixed-point
-        iteration diverges. Nearest bones are tried first; the rest only if those fail.
-        Returns (px, py, residual px)."""
+    def inverse(self, x, y, guess=None):
+        """Rest point p with F(p) = (x, y), returned as (px, py, residual px). Starts from
+        `guess` (the answer for the previous frame: neighbouring frames differ little), else
+        from the inverse of the three nearest posed bones' own motion (exact for large
+        rotations, where a plain fixed-point iteration diverges), the other bones only if those
+        fail. Where bones overlap a point may have no preimage: the closest
+        answer is kept, and a `guess` marked so (residual > 2 px) is not searched again."""
+        best = None
+        if guess is not None:
+            best = self._blend(guess[0], guess[1], x, y, 4)
+            if best[2] < .5 or (len(guess) > 2 and guess[2] > 2):
+                return best
         starts = []
         for child, a, b in sorted(self.posed, key=lambda bone: _segment_distance(x, y, bone[1], bone[2])):
             c, s, r0, p0 = self.moves[child]
             dx, dy = x - p0[0], y - p0[1]
             k = c * c + s * s
             starts.append((r0[0] + (c * dx + s * dy) / k, r0[1] + (c * dy - s * dx) / k))
-        starts.append((x, y))
-        best = None
+        starts.insert(min(3, len(starts)), (x, y))
         for sx, sy in starts:
-            found = self._newton(sx, sy, x, y, 8)
+            found = self._blend(sx, sy, x, y, 4)
+            if found[2] >= .5:  # the weights change fast here: Newton from the same start
+                found = min(found, self._newton(sx, sy, x, y, 8), key=lambda f: f[2])
             if best is None or found[2] < best[2]:
                 best = found
             if best[2] < .5:
-                break
+                return best
         return best
 
 
-def deform(canvas, box, skin, rest, pose):
+def deform(canvas, box, skin, rest, pose, hints=None, grid=GRID):
     """`canvas` warped so its skeleton `rest` moves to `pose` (only inside `box`): each mesh
-    vertex q of the output samples the source point p with F(p) = q."""
+    vertex q of the output samples the source point p with F(p) = q. `hints` (a dict kept by
+    the caller across frames) holds the last answers and speeds the next frame up."""
     warp = Warp(skin, rest, pose)
     x0, y0, x1, y1 = box
-    xs = list(range(x0, x1, GRID)) + [x1]
-    ys = list(range(y0, y1, GRID)) + [y1]
+    xs = list(range(x0, x1, grid)) + [x1]
+    ys = list(range(y0, y1, grid)) + [y1]
     moved = {}
     for x in xs:
         for y in ys:
-            px, py, _ = warp.inverse(x, y)
+            px, py, residual = warp.inverse(x, y, hints.get((x, y)) if hints is not None else None)
+            if hints is not None:
+                hints[(x, y)] = (px, py, residual)
             moved[(x, y)] = (px - x0, py - y0)
     mesh = [((l - x0, t - y0, r - x0, b - y0), [*moved[(l, t)], *moved[(l, b)], *moved[(r, b)], *moved[(r, t)]])
             for l, r in zip(xs, xs[1:]) for t, b in zip(ys, ys[1:])]
@@ -242,7 +284,8 @@ def deform(canvas, box, skin, rest, pose):
 class Transition:
     """Pose A → B on one canvas: skeletons {joint: (x, y)} in canvas pixels."""
 
-    def __init__(self, canvas_a, joints_a, canvas_b, joints_b, pad=60):
+    def __init__(self, canvas_a, joints_a, canvas_b, joints_b, pad=60, grid=GRID):
+        self.grid = grid  # mesh cell, px: coarser is faster (the desktop podium uses 14)
         self.ja, self.jb = complete(joints_a, joints_b), complete(joints_b, joints_a)
         torso = math.hypot(self.ja["chest"][0] - self.ja["pelvis"][0], self.ja["chest"][1] - self.ja["pelvis"][1])
         self.skin_a, self.skin_b = Skin(self.ja, torso), Skin(self.jb, torso)
@@ -253,19 +296,32 @@ class Transition:
                     min(w, max(ba[2], bb[2]) + pad), min(h, max(ba[3], bb[3]) + pad))
         ys = [y for _, y in self.ja.values()]
         self.height = max(ys) - min(ys)
+        self.hints_a, self.hints_b = {}, {}  # inverse-warp answers of the last frame
 
     def skeleton(self, u, ease):
         return in_between(self.ja, self.jb, u, ease) if u < 1 else dict(self.jb)
 
     def layer(self, target, u, ease):
         """The drawing for skeleton `target` at progress u."""
+        a = lambda: deform(self.ca, self.box, self.skin_a, self.ja, target, self.hints_a, self.grid)
+        b = lambda: deform(self.cb, self.box, self.skin_b, self.jb, target, self.hints_b, self.grid)
         if u >= 1:
-            return deform(self.cb, self.box, self.skin_b, self.jb, target)
+            return b()
         mix = smooth(.2, .8, min(1.0, max(0.0, ease(u))))
         if mix <= 0:
-            return deform(self.ca, self.box, self.skin_a, self.ja, target)
-        return Image.blend(deform(self.ca, self.box, self.skin_a, self.ja, target),
-                           deform(self.cb, self.box, self.skin_b, self.jb, target), mix)
+            return a()
+        return Image.blend(a(), b(), mix)
+
+
+def cycle(count, loop):
+    """Order of the poses in one cycle: a loop goes round; an open phrase dances there and back."""
+    there = list(range(count))
+    if count < 2:
+        return there
+    return there + [0] if loop else there + there[-2::-1]
+
+
+STYLES = {"soft": (.78, "soft"), "groove": (.6, "hit")}  # share of a count spent moving, curve
 
 
 def dance_frames(canvases, joints, loop, render, bpm=120, fps=50, style="soft", rhythm=None):
