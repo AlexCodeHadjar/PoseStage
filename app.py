@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import logging
 from logging.handlers import RotatingFileHandler
 import mimetypes
@@ -15,6 +16,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
 
+import dance
 import poses
 from poses import DATA_DIR, PoseCatalog
 
@@ -216,6 +218,8 @@ class Api:
         self._fullscreen = fullscreen
         self._on_top = False
         self._compact = False
+        self._dances = {"key": None, "status": "idle", "phrases": [], "error": None}
+        self._dance_lock = threading.Lock()
 
     # --- Poses and state ---
 
@@ -252,6 +256,41 @@ class Api:
     def set_pose_scale(self, file, factor):
         """User's size correction of one pose (0.5…2, 1 removes it); returns the updated Pose."""
         return self._catalog.set_scale(file, factor)
+
+    # --- Dances (docs/DANCE.md) ---
+
+    def get_dances(self):
+        """Dance phrases of the active collection: {status: "ready"|"working"|"error", phrases, error}.
+        The search runs in the background (the first time every drawing's outfit is measured,
+        about a minute for 300 poses; later seconds) and is kept until the poses, their
+        skeletons or supports change. Call again while "working"."""
+        cid, items = self._catalog.snapshot()
+        digest = hashlib.sha256(json.dumps(
+            [cid] + [[p["file"], p.get("joints"), (p.get("support") or {}).get("mode")] for p in items],
+            sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        with self._dance_lock:
+            state = self._dances
+            if state["key"] != digest:
+                state.update(key=digest, status="working", phrases=[], error=None)
+                threading.Thread(target=self._find_dances, args=(digest, items), daemon=True,
+                                 name="dances").start()
+            return {"status": state["status"], "phrases": state["phrases"], "error": state["error"]}
+
+    def _find_dances(self, digest, items):
+        try:
+            styles = dance.load_styles(items, self._catalog.resolve)
+            by_file = {pose["file"]: pose for pose in items}
+            phrases = [dict(phrase, poses=[
+                {"file": e["file"], "mirror": e["mirror"],
+                 "pose": dance.mirror_pose(by_file[e["file"]]) if e["mirror"] else by_file[e["file"]]}
+                for e in phrase["poses"]]) for phrase in dance.find_phrases(items, styles=styles)]
+            result = {"status": "ready", "phrases": phrases, "error": None}
+        except Exception as error:  # noqa: BLE001 — reported to the UI, logged with the traceback
+            logging.exception("Dance phrase search failed")
+            result = {"status": "error", "phrases": [], "error": str(error)}
+        with self._dance_lock:
+            if self._dances["key"] == digest:  # not superseded by a newer request
+                self._dances.update(result)
 
     # --- Collections ---
 

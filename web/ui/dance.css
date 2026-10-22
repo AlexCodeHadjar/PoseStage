@@ -1,0 +1,259 @@
+/* «Танцы»: button next to the gallery's, the list of phrases, the player bar. */
+.dance-open {
+  position: fixed;
+  top: 18px;
+  right: 66px;
+  z-index: 25;
+  width: 40px;
+  height: 40px;
+  padding: 10px;
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(12px);
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.4s, background 0.15s, transform 0.15s;
+}
+
+body.windowed .dance-open {
+  top: 40px;
+}
+
+.dance-open svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.dance-open:hover,
+.dance-open:focus-visible {
+  opacity: 0.95;
+  background: rgba(255, 255, 255, 0.11);
+  transform: scale(1.06);
+}
+
+body.idle .dance-open {
+  opacity: 0.035;
+}
+
+body.error .dance-open,
+body.nav-gallery-open .dance-open,
+body.dance-list-open .dance-open {
+  display: none;
+}
+
+/* --- List ------------------------------------------------------------------ */
+.dance-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  justify-content: center;
+  padding: 22px;
+  background: rgba(10, 11, 13, 0.45);
+}
+
+body.windowed .dance-layer {
+  top: 28px;
+}
+
+.dance-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 1100px);
+  min-height: 0;
+  color: #e4e6e9;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  background: rgba(26, 28, 32, 0.86);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+  font: 13px Segoe UI, sans-serif;
+  overflow: hidden;
+}
+
+.dance-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.dance-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.dance-status {
+  color: #a7abb1;
+}
+
+.dance-status.error {
+  color: #ffb4ab;
+}
+
+.dance-spacer {
+  flex: 1;
+}
+
+.dance-list {
+  flex: 1;
+  min-height: 0;
+  padding: 8px;
+  overflow-y: auto;
+  outline: none;
+}
+
+.dance-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.dance-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.dance-row.selected {
+  border-color: rgba(130, 170, 255, 0.5);
+  background: rgba(110, 150, 255, 0.1);
+}
+
+.dance-play {
+  flex: none;
+  width: 28px;
+  color: #9fb8ff;
+  font-size: 18px;
+  text-align: center;
+}
+
+.dance-info {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 3px;
+  width: 230px;
+}
+
+.dance-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.dance-meta {
+  color: #9a9ea5;
+}
+
+.dance-strip {
+  display: flex;
+  flex: 1;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.dance-thumb {
+  flex: none;
+  width: 64px;
+  height: 86px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.dance-thumb.mirror {
+  transform: scaleX(-1);
+}
+
+.dance-empty {
+  padding: 40px;
+  color: #a7abb1;
+  text-align: center;
+}
+
+.dance-hint {
+  padding: 8px 18px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  color: #80858c;
+  font-size: 12px;
+}
+
+/* --- Player bar -------------------------------------------------------------- */
+.dance-hud {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 16px;
+  color: #e4e6e9;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 14px;
+  background: rgba(26, 28, 32, 0.78);
+  backdrop-filter: blur(14px);
+  font: 13px Segoe UI, sans-serif;
+  transform: translateX(-50%);
+  transition: opacity 0.4s;
+}
+
+body.idle .dance-hud {
+  opacity: 0.25;
+}
+
+.dance-hud-name {
+  max-width: 320px;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dance-hud-step {
+  min-width: 44px;
+  color: #a7abb1;
+  font-variant-numeric: tabular-nums;
+}
+
+.dance-btn {
+  height: 30px;
+  min-width: 34px;
+  padding: 0 10px;
+  color: #d5d7da;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  font: 13px Segoe UI, sans-serif;
+  cursor: pointer;
+}
+
+.dance-btn:hover {
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.dance-btn.subtle {
+  border-color: transparent;
+  background: transparent;
+  color: #a7abb1;
+}
+
+/* While dancing the pose counter and arrows would be misleading. */
+body.dancing .nav-counter,
+body.dancing nav .arrow {
+  opacity: 0;
+  pointer-events: none;
+}

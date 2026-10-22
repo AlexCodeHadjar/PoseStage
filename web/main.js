@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { createStage, frameCamera, orbitCamera } from './scene/stage.js';
 import { createPost } from './scene/post.js';
 import { Figure } from './scene/figure.js';
+import { complete, inBetween, groove, curve, smooth, createDanceRig, jointPoints, cycle, STYLES } from './scene/dance.js';
 import { setSizing, getSizing } from './scene/placement.js';
 import { TextureCache } from './scene/textures.js';
 import { createEmitter } from './core/events.js';
@@ -19,6 +20,7 @@ const UI_MODULES = [
   ['artist', './ui/artist.js'],
   ['navigator', './ui/navigator.js'],
   ['skeleton', './ui/skeleton.js'],
+  ['dance', './ui/dance.js'],
 ];
 
 const canvas = document.querySelector('#stage');
@@ -146,7 +148,7 @@ function saveState() {
   }
 }
 
-const events = createEmitter(['pose', 'poses', 'transition'], report);
+const events = createEmitter(['pose', 'poses', 'transition', 'dance'], report);
 const shortcuts = createShortcuts(report);
 const overlays = createOverlays(report);
 const help = createHelp(shortcuts, overlays);
@@ -211,6 +213,7 @@ function resize() {
   applyView();
   current?.fit(camera);
   transition?.next.fit(camera);
+  for (const figure of dance?.figures || []) figure.fit(camera);
   renderer.shadowMap.needsUpdate = true;
   chrome.updateWindowed();
   invalidate();
@@ -227,6 +230,7 @@ function baseTarget() {
 
 function requestStep(delta) {
   chrome.wake();
+  if (dance) stopDance();
   const steps = Math.trunc(Number(delta));
   if (!steps || !current || !poses.length) {
     return;
@@ -238,6 +242,7 @@ function requestStep(delta) {
 
 function requestGoTo(target) {
   chrome.wake();
+  if (dance) stopDance();
   if (!Number.isInteger(target) || target < 0 || target >= poses.length || !current) {
     return;
   }
@@ -370,6 +375,7 @@ function abortNavigation() {
 // the backend's saved state picks the pose (restored by file name).
 async function reload(list, startIndex) {
   const gen = ++generation;
+  stopDance();
   abortNavigation();
   current?.dispose();
   current = null;
@@ -566,6 +572,10 @@ function renderFrame(now) {
 
   current?.face(camera);
   transition?.next.face(camera);
+  if (dance) {
+    danceFrame(dt);
+    renderer.shadowMap.needsUpdate = true;
+  }
   if (idleOn) {
     // Idle animation: breathing, weight shift and head motion; the cast shadow follows.
     for (const figure of [current, transition?.old, transition?.next]) figure?.animate(camera, now / 1000);
@@ -647,7 +657,7 @@ let idleLast = 0;
 // ~20 fps (enough for slow breathing) so the pose stays alive next to the drawing program.
 function idleTick(now) {
   idleFrameId = 0;
-  if (active || !idleOn || document.hidden || !framing) return;
+  if (active || !(idleOn || (dance && !dance.paused)) || document.hidden || !framing) return;
   if (now - idleLast >= 48) {
     idleLast = now;
     renderFrame(now);
@@ -698,7 +708,162 @@ function pause() {
   pendingSteps = 0;
   finish();
   lastFrame = 0;
-  if (idleOn && !idleFrameId) idleFrameId = requestAnimationFrame(idleTick);
+  if ((idleOn || dance) && !idleFrameId) idleFrameId = requestAnimationFrame(idleTick);
+}
+
+// --- Dance: a phrase played on the podium (docs/DANCE.md) -----------------
+// One pose per count; between counts both drawings bend by their bones toward a shared
+// in-between skeleton (scene/dance.js) and cross-fade. The skeletons are compared in layout
+// pixels (y down), where every pose stands as it is placed on the podium.
+const DANCE_SPEEDS = [1, 0.5, 0.25];
+let dance = null; // {phrase, figures, textures, order, time, frame, step, paused, speed, style, bpm}
+let danceToken = 0;
+const danceLoader = new THREE.TextureLoader();
+
+function layoutJoints(figure) {
+  const p = figure.placement;
+  const out = {};
+  for (const [id, [x, y]] of Object.entries(figure.danceRig.rest)) {
+    out[id] = [p.mapping.centerX + (x - p.cx) * p.scale, -(p.mapping.centerY + (p.cy - y) * p.scale)];
+  }
+  return out;
+}
+
+function toSource(figure, joints) {
+  const p = figure.placement;
+  const out = {};
+  for (const [id, [x, y]] of Object.entries(joints)) {
+    out[id] = [p.cx + (x - p.mapping.centerX) / p.scale, p.cy + (y + p.mapping.centerY) / p.scale];
+  }
+  return out;
+}
+
+function showFigure(figure, on) {
+  if (!figure) return;
+  figure.group.visible = on;
+  figure.shadow.visible = on;
+}
+
+// phrase: {name, loop, poses: [{file, mirror, pose}]}; options: {bpm, style: "soft"|"groove", speed}.
+async function playDance(phrase, options = {}) {
+  const entries = (phrase?.poses || []).filter((entry) => entry?.pose?.url && Array.isArray(entry.pose.box));
+  if (entries.length < 2 || !studio) throw new Error('В связке меньше двух поз');
+  if (entries.some((entry) => !jointPoints(entry.pose).pelvis || !jointPoints(entry.pose).chest)) {
+    throw new Error('У позы связки нет скелета');
+  }
+  stopDance();
+  const token = ++danceToken;
+  const loads = new Map();
+  for (const entry of entries) {
+    if (!loads.has(entry.pose.url)) {
+      loads.set(entry.pose.url, danceLoader.loadAsync(entry.pose.url).then((texture) => {
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+        return texture;
+      }));
+    }
+  }
+  const settled = await Promise.allSettled(loads.values());
+  const textures = new Map([...loads.keys()].map((url, i) => [url, settled[i].status === 'fulfilled' ? settled[i].value : null]));
+  const failed = settled.find((result) => result.status === 'rejected');
+  if (token !== danceToken || failed) {
+    for (const texture of textures.values()) texture?.dispose();
+    if (failed && token === danceToken) throw failed.reason;
+    return null;
+  }
+  if (transition) finish();
+  const figures = entries.map((entry) => {
+    const figure = new Figure(entry.pose, textures.get(entry.pose.url), studio.scene, overlay, { mirror: !!entry.mirror, soft: true });
+    figure.danceRig = createDanceRig(jointPoints(entry.pose));
+    figure.setRig(figure.danceRig);
+    figure.fit(camera);
+    showFigure(figure, false);
+    return figure;
+  });
+  showFigure(current, false);
+  dance = {
+    phrase,
+    figures,
+    textures: [...textures.values()],
+    order: cycle(figures.length, !!phrase.loop),
+    time: 0,
+    frame: 0,
+    step: -1,
+    paused: false,
+    speed: DANCE_SPEEDS.includes(options.speed) ? options.speed : 1,
+    style: Object.hasOwn(STYLES, options.style) ? options.style : 'soft',
+    bpm: clamp(Number(options.bpm) || 120, 60, 200),
+  };
+  renderer.shadowMap.needsUpdate = true;
+  if (!active && !idleFrameId) idleFrameId = requestAnimationFrame(idleTick);
+  invalidate();
+  events.emit('dance', { phase: 'start', ...danceState() });
+  return danceState();
+}
+
+function stopDance() {
+  danceToken++;
+  if (!dance) return;
+  const d = dance;
+  dance = null;
+  for (const figure of d.figures) figure.dispose();
+  for (const texture of d.textures) texture.dispose();
+  showFigure(current, true);
+  renderer.shadowMap.needsUpdate = true;
+  invalidate();
+  events.emit('dance', { phase: 'end' });
+}
+
+function danceState() {
+  if (!dance) return null;
+  const { phrase, figures, paused, speed, style, bpm, step, order } = dance;
+  return { name: phrase.name, count: figures.length, pose: order[Math.max(0, step)] ?? 0, paused, speed, style, bpm };
+}
+
+function danceFrame(dt) {
+  const d = dance;
+  if (!d.paused) d.time += dt * d.speed;
+  const beat = 60 / d.bpm;
+  const { share, curve: curveName } = STYLES[d.style];
+  const ease = curve(curveName);
+  const steps = d.order.length - 1;
+  const count = Math.floor(d.time / beat);
+  const step = ((count % steps) + steps) % steps;
+  const u = (d.time - count * beat) / (beat * share);
+  const a = d.figures[d.order[step]];
+  const b = d.figures[d.order[step + 1]];
+  if (step !== d.step) {
+    d.step = step;
+    events.emit('dance', { phase: 'step', ...danceState() });
+  }
+  a.fit(camera);
+  b.fit(camera);
+  if (!(a.placement?.scale > 0) || !(b.placement?.scale > 0)) return; // 0×0 window (minimised)
+  const ja = layoutJoints(a);
+  const jb = layoutJoints(b);
+  let target = u < 1 ? inBetween(complete(ja, jb), complete(jb, ja), u, ease) : { ...jb };
+  if (d.style === 'groove') {
+    const ys = Object.values(ja).map(([, y]) => y);
+    target = groove(target, d.time, beat, Math.max(...ys) - Math.min(...ys));
+  }
+  // B fades in over A while they overlap, then what is left of A fades out: no see-through.
+  const mix = u < 1 ? smooth(0.2, 0.8, clamp(ease(u))) : 1;
+  d.frame++;
+  for (const figure of d.figures) {
+    if (figure !== a && figure !== b) {
+      showFigure(figure, false);
+      continue;
+    }
+    const opacity = figure === b ? clamp(mix * 2) : clamp(2 - mix * 2);
+    figure.group.visible = opacity > 0.001;
+    figure.mesh.material.opacity = opacity;
+    figure.mesh.renderOrder = figure === b ? 2 : 1;
+    figure.shadow.visible = figure === (mix < 0.5 ? a : b);
+    if (figure.group.visible) {
+      figure.danceRig.setTarget(toSource(figure, target));
+      figure.animate(camera, d.frame);
+    }
+  }
 }
 
 // --- Background: the studio or a picture behind the podium ----------------
@@ -761,6 +926,29 @@ const app = {
   updatePose,
   setOrder,
   on: events.on,
+  // Dance phrases (docs/DANCE.md): played on the podium, one pose per count.
+  dance: {
+    play: (phrase, options) => playDance(phrase, options),
+    stop: () => stopDance(),
+    state: () => danceState(),
+    setPaused(on) {
+      if (dance) dance.paused = !!on;
+      if (dance && !on && !active && !idleFrameId) idleFrameId = requestAnimationFrame(idleTick);
+      events.emit('dance', { phase: 'state', ...danceState() });
+      return danceState();
+    },
+    setSpeed(speed) {
+      if (dance && DANCE_SPEEDS.includes(speed)) dance.speed = speed;
+      events.emit('dance', { phase: 'state', ...danceState() });
+      return danceState();
+    },
+    setStyle(style) {
+      if (dance && Object.hasOwn(STYLES, style)) dance.style = style;
+      events.emit('dance', { phase: 'state', ...danceState() });
+      return danceState();
+    },
+    speeds: () => DANCE_SPEEDS.slice(),
+  },
   shortcuts: {
     register: shortcuts.register,
     list: shortcuts.list,
@@ -1003,7 +1191,7 @@ document.addEventListener('visibilitychange', () => {
     pause();
   } else if (document.hasFocus()) {
     resume();
-  } else if (idleOn && !idleFrameId) {
+  } else if ((idleOn || dance) && !idleFrameId) {
     idleFrameId = requestAnimationFrame(idleTick); // restored without focus: keep the pose alive
   }
 });
@@ -1040,6 +1228,7 @@ Object.defineProperty(window, '__poseStage', {
     scaleAdjust: current?.pose.scale_adjust ?? 1,
     sizeLimited: current?.placement?.limited ?? false,
     idle: idleOn,
+    dance: danceState(),
     joints: current?.pose.joints_source ?? null,
     figures: overlay ? overlay.children.length : 0,
     supportCenter: current?.placement ? [current.placement.mapping.centerX, current.placement.mapping.centerY] : null,

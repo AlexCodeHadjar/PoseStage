@@ -68,6 +68,22 @@ type Pose = {
 - `set_pose_scale(file: string, factor: number) -> Pose` — ручная поправка 0.5…2, `1` удаляет её.
   Хранится в `scale_overrides.json` по коллекции. Иное значение — `ValueError`.
 
+### Танцы (docs/DANCE.md)
+
+- `get_dances() -> {status: "ready"|"working"|"error", phrases: Dance[], error: string|null}` — связки
+  активной коллекции. Поиск идёт в фоне (`dance.load_styles` + `dance.find_phrases`; первый раз
+  читает все рисунки, около минуты на 300 поз) и хранится, пока не изменятся позы, их скелеты или
+  опоры. Пока `"working"` — вызвать ещё раз позже.
+
+```ts
+type Dance = {
+  id: string; name: string;      // «Руки волной · Шаг шире»
+  loop: boolean;                 // последняя поза перетекает в первую
+  score: number;                 // средняя стоимость шага (меньше — лучше)
+  poses: {file: string; mirror: boolean; pose: Pose}[];  // pose отражённой — уже отражённая (box, скелет, опора)
+};
+```
+
 ### Коллекции (несколько папок)
 
 ```ts
@@ -134,7 +150,7 @@ pywebview (`new Function`), хэш importmap считается из `index.html
 
 ## 2. Ядро фронтенда → UI-модули
 
-`web/main.js` импортирует `web/ui/artist.js` и `web/ui/navigator.js` и вызывает
+`web/main.js` импортирует `web/ui/artist.js`, `web/ui/navigator.js`, `web/ui/skeleton.js` и `web/ui/dance.js` и вызывает
 `install(app)` у каждого после создания сцены. Стили модулей: `web/ui/artist.css`,
 `web/ui/navigator.css` (подключены в `index.html`). Модуль создаёт свой DOM сам.
 
@@ -150,7 +166,18 @@ type App = {
   reload(poses: Pose[], index?: number): Promise<void>; // новый список (смена коллекции)
   updatePose(index: number, pose: Pose): void;  // заменить данные позы и переразместить
   setOrder(indices: number[] | null): void;     // порядок обхода ←/→ (фильтр); null — все
-  on(event: "pose"|"poses"|"transition", cb: (detail) => void): () => void;
+  on(event: "pose"|"poses"|"transition"|"dance", cb: (detail) => void): () => void;
+  // Танец на подиуме: по позе на счёт, переходы по костям (scene/dance.js), обычная поза скрыта.
+  // Навигация (←/→, goTo, reload) останавливает танец. "dance": {phase: "start"|"step"|"state"|"end", ...DanceState}.
+  dance: {
+    play(phrase: Dance, options?: {bpm?: number; style?: "soft"|"groove"; speed?: 1|0.5|0.25}): Promise<DanceState|null>;
+    stop(): void;
+    state(): DanceState | null;   // {name, count, pose (индекс в связке), paused, speed, style, bpm}
+    setPaused(on: boolean): DanceState | null;
+    setSpeed(speed: 1|0.5|0.25): DanceState | null;
+    setStyle(style: "soft"|"groove"): DanceState | null;
+    speeds(): number[];
+  };
   shortcuts: {
     // handler обязателен, кроме строк-описаний жестов мыши: keys: [] и непустой hint.
     register(def: {keys: string[]; title: string; group: string; hint?: string; handler?: (e) => void}): () => void;
@@ -211,6 +238,7 @@ type App = {
 | M | масштаб поз: как в файле (по умолчанию) ↔ единый размер тела (`view.setSizing`) | художник |
 | Y | оживление позы (`view.setIdle`) | художник |
 | J | правка скелета (`set_joints`) | скелет |
+| K, пробел, «,» «.» | танцы: список связок; во время танца — пауза, темп; Esc — стоп | танцы |
 | G | галерея миниатюр | навигация |
 | S | избранное | навигация |
 | 1 / 2 / 3 / 0 | опора: стопы / колени / сидя-лёжа / авто | навигация |

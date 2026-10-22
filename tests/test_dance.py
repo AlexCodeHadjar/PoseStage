@@ -3,6 +3,7 @@ matching and its cache, bone-driven transitions, the folder export.
 
 Run with: python -m unittest discover -s tests -v
 """
+import json
 import math
 import os
 from pathlib import Path
@@ -10,11 +11,13 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
 from PIL import Image, ImageChops, ImageDraw, ImageOps
 
+import app
 import dance
 import dance_motion
 import poses
@@ -388,6 +391,102 @@ class ExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(SystemExit), mock.patch("sys.stderr"):
                 export_phrases.main(["--folder", tmp, "--out", str(Path(tmp) / "Позы — связки")])
+
+
+def dance_reference():
+    """Values the JS port (web/scene/dance.js) must reproduce: tests/web/dance_reference.js.
+    Regenerate after changing dance_motion.py:
+    python -c "import json, tests.test_dance as t; print(json.dumps(t.dance_reference(), separators=(',', ':')))"
+    """
+    ja_raw = {"head": [200, 130], "chest": [200, 255], "navel": [200, 360], "pelvis": [200, 470],
+              "shoulder_l": [250, 230], "shoulder_r": [150, 230], "elbow_l": [262, 325], "elbow_r": [140, 325],
+              "wrist_l": [268, 420], "wrist_r": [130, 418], "hip_l": [230, 470], "hip_r": [170, 470],
+              "knee_l": [235, 680], "knee_r": [165, 680], "foot_l": [240, 880], "foot_r": [160, 880]}
+    jb_raw = dict(ja_raw, chest=[214, 252], head=[226, 130], elbow_l=[330, 250], wrist_l=[300, 160],
+                  elbow_r=[90, 300], wrist_r=[60, 220], knee_l=[262, 676], foot_l=[300, 870])
+    del jb_raw["wrist_r"]  # missing in B: completed from A
+    tuples = lambda joints: {k: tuple(v) for k, v in joints.items()}
+    ja = dance_motion.complete(tuples(ja_raw), tuples(jb_raw))
+    jb = dance_motion.complete(tuples(jb_raw), tuples(ja_raw))
+    rounded = lambda joints: {k: [round(x, 9), round(y, 9)] for k, (x, y) in joints.items()}
+    out = {"JA": ja_raw, "JB": jb_raw, "between": [], "groove": None, "forward": []}
+    for u, name in ((.37, "hit"), (.6, "soft"), (.9, "fast")):
+        out["between"].append([u, name, rounded(dance_motion.in_between(ja, jb, u, dance_motion.curve(name)))])
+    mid = dance_motion.in_between(ja, jb, .37, dance_motion.curve("hit"))
+    out["groove"] = rounded(dance_motion.groove(mid, .83, .5, 750))
+    torso = math.hypot(ja["chest"][0] - ja["pelvis"][0], ja["chest"][1] - ja["pelvis"][1])
+    warp = dance_motion.Warp(dance_motion.Skin(ja, torso), ja, mid)
+    for p in ((200, 300), (255, 380), (290, 430), (180, 700), (240, 130), (40, 40)):
+        fx, fy = warp.forward(*p)
+        out["forward"].append([p[0], p[1], round(fx, 9), round(fy, 9)])
+    return out
+
+
+class ReferenceTests(unittest.TestCase):
+    def test_js_reference_is_current(self):
+        text = (ROOT / "tests" / "web" / "dance_reference.js").read_text(encoding="utf-8")
+        saved = json.loads(text.split("export const DANCE_REFERENCE = ", 1)[1].rstrip().rstrip(";"))
+        self.assertEqual(saved, json.loads(json.dumps(dance_reference())))
+
+
+class DanceApiTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.old = poses.DATA_DIR
+        poses.DATA_DIR = self.root / "appdata"
+        self.items = []
+        for i in range(8):
+            p = pose(f"p{i}.png", skeleton(math.pi / 2 - .35 * i))
+            drawing(p["joints"]).save(self.root / p["file"])
+            self.items.append(dict(p, url=f"/t/poses/{p['file']}", thumb=f"/t/thumbs/{p['file']}"))
+        test = self
+
+        class Catalog:
+            def snapshot(self):
+                return "cid", list(test.items)
+
+            def resolve(self, file):
+                return test.root / file
+
+        self.api = app.Api(Catalog())
+
+    def tearDown(self):
+        poses.DATA_DIR = self.old
+        self.tmp.cleanup()
+
+    def wait(self):
+        for _ in range(200):
+            result = self.api.get_dances()
+            if result["status"] != "working":
+                return result
+            time.sleep(.05)
+        self.fail("dance search did not finish")
+
+    def test_phrases_come_with_their_poses(self):
+        result = self.wait()
+        self.assertEqual(result["status"], "ready", result["error"])
+        self.assertTrue(result["phrases"])
+        for phrase in result["phrases"]:
+            for entry in phrase["poses"]:
+                source = next(p for p in self.items if p["file"] == entry["file"])
+                self.assertEqual(entry["pose"]["url"], source["url"])
+                expected = dance.mirror_pose(source) if entry["mirror"] else source
+                self.assertEqual(entry["pose"]["box"], expected["box"])
+                self.assertEqual(entry["pose"]["joints"], expected["joints"])
+        json.dumps(result)  # crosses the pywebview bridge
+        self.assertEqual(self.api.get_dances(), result)  # cached: no new search
+
+    def test_a_changed_skeleton_searches_again(self):
+        self.wait()
+        self.items[3] = pose("p3.png", skeleton(1.0, pelvis=(200, 480)))
+        self.assertEqual(self.api.get_dances()["status"], "working")
+        self.assertEqual(self.wait()["status"], "ready")
+
+    def test_a_failing_search_is_reported(self):
+        with mock.patch.object(dance, "find_phrases", side_effect=RuntimeError("boom")), mock.patch("logging.exception"):
+            result = self.wait()
+        self.assertEqual((result["status"], result["error"], result["phrases"]), ("error", "boom", []))
 
 
 if __name__ == "__main__":

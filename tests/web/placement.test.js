@@ -9,6 +9,8 @@ import { frameCamera } from '../../web/scene/stage.js';
 import { groundMapping, fitPlacement, bodyScale, STATURE_SHARE, SUPPORT_RADIUS, setSizing, FILE_FIGURE_SHARE } from '../../web/scene/placement.js';
 import { Figure } from '../../web/scene/figure.js';
 import { createRig, estimateJoints, templateJoints, IDLE_LOOP, JOINT_IDS } from '../../web/scene/idle.js';
+import { complete, inBetween, groove, curve, createDanceRig, jointPoints, cycle } from '../../web/scene/dance.js';
+import { DANCE_REFERENCE } from './dance_reference.js';
 import { TextureCache } from '../../web/scene/textures.js';
 import { stepTarget, normalizeOrder, edgeTarget } from '../../web/core/navigation.js';
 import { ViewState } from '../../web/core/view.js';
@@ -135,6 +137,34 @@ test('skeleton v2 templates: 16 points, sides, hidden far limbs, support flags',
   const wrist = joints.points.wrist_r.xy;
   deepEqual(still.displace(wrist[0], wrist[1], 0.9), [0, 0], 'supported wrist pinned');
   assert(Math.hypot(...free.displace(wrist[0], wrist[1], 0.9)) >= 0, 'free rig runs');
+});
+
+test('dance transitions (scene/dance.js) match dance_motion.py', () => {
+  const R = DANCE_REFERENCE;
+  const ja = complete(R.JA, R.JB);
+  const jb = complete(R.JB, R.JA);
+  const same = (actual, expected, label) => {
+    deepEqual(Object.keys(actual).sort(), Object.keys(expected).sort(), `${label} joints`);
+    for (const [id, [x, y]] of Object.entries(expected)) {
+      near(actual[id][0], x, 1e-6, `${label} ${id} x`);
+      near(actual[id][1], y, 1e-6, `${label} ${id} y`);
+    }
+  };
+  for (const [u, name, expected] of R.between) same(inBetween(ja, jb, u, curve(name)), expected, `in-between ${name} ${u}`);
+  const mid = inBetween(ja, jb, 0.37, curve('hit'));
+  same(groove(mid, 0.83, 0.5, 750), R.groove, 'groove');
+  const rig = createDanceRig(ja);
+  rig.setTarget(mid);
+  for (const [x, y, fx, fy] of R.forward) {
+    const [dx, dy] = rig.displace(x, y);
+    near(x + dx, fx, 1e-6, `forward x at ${x},${y}`);
+    near(y + dy, fy, 1e-6, `forward y at ${x},${y}`);
+  }
+  equal(rig.lockAt(0, 0), 0, 'nothing pinned in a dance');
+  deepEqual(cycle(4, true), [0, 1, 2, 3, 0]);
+  deepEqual(cycle(4, false), [0, 1, 2, 3, 2, 1, 0]);
+  const pose = FIXTURE_POSES[1];
+  deepEqual(Object.keys(jointPoints({ ...pose, joints: templateJoints(pose, 'front') })).length, 16);
 });
 
 test('Figure.animate bends the drawing and restores it', () => {

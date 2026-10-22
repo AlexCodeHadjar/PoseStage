@@ -11,29 +11,31 @@ const SEGMENTS_Y = 36;
 const SHADOW_ROWS_STILL = 1;
 const SHADOW_ROWS_ANIMATED = 16;
 
-function shadowPlane(pose, rows) {
+function shadowPlane(pose, rows, mirror) {
   const geometry = new THREE.PlaneGeometry(1, 1, 128, rows);
-  cropUV(geometry, pose);
+  cropUV(geometry, pose, mirror);
   return geometry;
 }
 
-// Restrict a unit plane's UVs to the pose bbox (texture v grows upwards).
-function cropUV(geometry, pose) {
+// Restrict a unit plane's UVs to the pose bbox (texture v grows upwards). A mirrored pose
+// (dance phrases) has its box and skeleton in flipped coordinates; its texture is the original
+// image, read right to left.
+function cropUV(geometry, pose, mirror = false) {
   const [x1, y1, x2, y2] = pose.box;
   const uv = geometry.attributes.uv;
   for (let i = 0; i < uv.count; i++) {
-    uv.setXY(
-      i,
-      (x1 + uv.getX(i) * (x2 - x1)) / pose.w,
-      1 - y2 / pose.h + (uv.getY(i) * (y2 - y1)) / pose.h,
-    );
+    const u = (x1 + uv.getX(i) * (x2 - x1)) / pose.w;
+    uv.setXY(i, mirror ? 1 - u : u, 1 - y2 / pose.h + (uv.getY(i) * (y2 - y1)) / pose.h);
   }
 }
 
 export class Figure {
-  constructor(pose, texture, stageScene, overlayScene) {
+  // options.mirror: show the image flipped (pose data already mirrored).
+  // options.soft: blendable (opacity) instead of the crisp alpha cut, for dance cross-fades.
+  constructor(pose, texture, stageScene, overlayScene, { mirror = false, soft = false } = {}) {
     this.pose = pose;
     this.texture = texture;
+    this.mirror = mirror;
     this.uniforms = {
       uReveal: { value: 1 },
       uErase: { value: 0 },
@@ -42,14 +44,16 @@ export class Figure {
 
     // Visible drawing: an unlit plane in the screen-space overlay scene.
     this.geometry = new THREE.PlaneGeometry(1, 1, SEGMENTS_X, SEGMENTS_Y);
-    cropUV(this.geometry, pose);
+    cropUV(this.geometry, pose, mirror);
     this.basePositions = this.geometry.attributes.position.array.slice();
     const material = new THREE.MeshBasicMaterial({
       map: texture,
-      alphaTest: 0.5,
+      alphaTest: soft ? 0.02 : 0.5,
       side: THREE.DoubleSide,
       toneMapped: false,
-      alphaToCoverage: true,
+      alphaToCoverage: !soft,
+      transparent: soft,
+      depthWrite: !soft,
     });
     dissolveMaterial(material, this.uniforms, true);
     this.mesh = new THREE.Mesh(this.geometry, material);
@@ -59,7 +63,7 @@ export class Figure {
 
     // Only the invisible shadow geometry follows the ground depths. The visible
     // PNG retains its original proportions, colors, and straight image plane.
-    this.shadowGeometry = shadowPlane(pose, SHADOW_ROWS_STILL);
+    this.shadowGeometry = shadowPlane(pose, SHADOW_ROWS_STILL, mirror);
     const ghost = new THREE.MeshBasicMaterial({
       map: texture,
       alphaTest: 0.5,
@@ -95,6 +99,18 @@ export class Figure {
     return this._rig;
   }
 
+  // Drive the drawing with another rig (same interface: lockAt, displace), e.g. a dance rig.
+  setRig(rig) {
+    this._rig = rig;
+    this._locks = new WeakMap();
+    this.time = undefined; // the next animate() rebuilds
+  }
+
+  // A shadow-plane UV → source px of the pose (flipped back for a mirrored pose).
+  uvToSource(u, v) {
+    return [(this.mirror ? 1 - u : u) * this.pose.w, (1 - v) * this.pose.h];
+  }
+
   // Per-vertex source points (px) and pin weights of a geometry, computed once.
   vertices(geometry, toSource) {
     let cached = this._locks.get(geometry);
@@ -117,7 +133,7 @@ export class Figure {
   // Swap the shadow strip between the still (1 row) and animated (16 rows) density.
   shadowRows(rows) {
     if (this.shadowGeometry.parameters.heightSegments === rows) return;
-    const geometry = shadowPlane(this.pose, rows);
+    const geometry = shadowPlane(this.pose, rows, this.mirror);
     this.shadow.geometry = geometry;
     this.shadowGeometry.dispose();
     this.shadowGeometry = geometry;
@@ -179,13 +195,12 @@ export class Figure {
     const time = this.time ?? null;
     const animated = time !== null;
     const { sources, locks } = animated
-      ? this.vertices(this.shadowGeometry, (i) => [uv.getX(i) * this.pose.w, (1 - uv.getY(i)) * this.pose.h])
+      ? this.vertices(this.shadowGeometry, (i) => this.uvToSource(uv.getX(i), uv.getY(i)))
       : { sources: null, locks: null };
     let dx = 0;
     let dy = 0;
     for (let i = 0; i < positions.count; i++) {
-      const sourceX = animated ? sources[i * 2] : uv.getX(i) * this.pose.w;
-      const sourceY = animated ? sources[i * 2 + 1] : (1 - uv.getY(i)) * this.pose.h;
+      const [sourceX, sourceY] = animated ? [sources[i * 2], sources[i * 2 + 1]] : this.uvToSource(uv.getX(i), uv.getY(i));
       if (animated) [dx, dy] = this.rig.displace(sourceX, sourceY, time, locks[i]);
       const px = mapping.centerX + (sourceX + dx - cx) * scale;
       const py = mapping.centerY + (cy - sourceY - dy) * scale;
@@ -216,7 +231,7 @@ export class Figure {
     forgetPose(pose);
     this.pose = pose;
     this.placement = null;
-    this._rig = null; // joints or supports may have changed
+    this._rig = null; // joints or supports may have changed (a dance rig is set again by its player)
     const time = this.time;
     this.time = undefined; // force the next animate() to rebuild
     if (time === null) this.animate(null, null);
