@@ -27,7 +27,7 @@ OFFLINE_ARGUMENTS = ("--disable-background-networking --disable-component-update
                      "--proxy-server=http://127.0.0.1:9 --proxy-bypass-list=127.0.0.1;localhost")
 MIME = {".js": "text/javascript", ".json": "application/json", ".png": "image/png",
         ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
-FIGURE_LAYER_RE = re.compile(r"([0-9a-f]{16})/([a-z0-9_]{1,32})/(source|parts|uncertain|outline)\.png")
+FIGURE_LAYER_RE = re.compile(r"([0-9a-f]{16})/([a-z0-9_]{1,32})/(source|parts|uncertain|outline|posed|rig_labels|w_[a-z0-9_.]{1,40}|s_[0-9a-f]{8})\.png")
 INLINE_RE = re.compile(r"<(script|style)\b([^>]*)>(.*?)</\1\s*>", re.IGNORECASE | re.DOTALL)
 COMPACT_SIZE = (480, 720)
 LAUNCH = {"runtime": None, "fallback": False}  # WebView2 runtime chosen for this run; relaunch flag
@@ -440,6 +440,35 @@ class Api:
         if base is None:
             return None
         return figure_doc.export(project, Path(base) / f"{project.doc.get('name') or 'figure'}-{_time.strftime('%Y%m%d-%H%M%S')}")
+
+    def parts_import_surface(self, project_id, part_id, above=False):
+        """Dialog → an image as a drawn surface of a part (docs/RIG.md); None on cancel."""
+        import figure_doc
+        from PIL import Image
+        path = self._pick_background()
+        if not path:
+            return None
+        with Image.open(path) as opened:
+            image = figure_doc.ImageOps.exif_transpose(opened).convert("RGBA")
+        try:
+            return self._service().call(project_id, "add_surface", {"part_id": part_id, "image": image, "above": bool(above),
+                                                                   "name": Path(path).stem}, "user")
+        except figure_doc.CommandError as error:
+            return {"error": str(error), "code": error.code}
+
+    def parts_export_frames(self, project_id, options=None):
+        """Dialog → the animation's PNG frames in a new subfolder, as a background job (parts_job)."""
+        import figure_doc
+        import time as _time
+        project = self._service().project(project_id)
+        base = self._pick_folder() if self._window else project.folder / "exports"
+        if base is None:
+            return None
+        folder = Path(base) / f"{(project.doc.get('name') or 'figure')[:40]}-frames-{_time.strftime('%Y%m%d-%H%M%S')}"
+        try:
+            return self._service().export_frames(project_id, folder, None, options, "user")
+        except figure_doc.CommandError as error:
+            return {"error": str(error), "code": error.code}
 
     def parts_close(self, project_id):
         return self._service().close(project_id)

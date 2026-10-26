@@ -5,10 +5,14 @@ A project is a folder that can be moved anywhere:
     source.<ext>           the picture, never changed (sha256 in the document)
     masks/<inst>_labels.png    label map of the instance: one byte per pixel = one terminal part
     masks/<inst>_uncertain.png pixels whose part is a guess (255) — for the "unsure" overlay
+    masks/<inst>_w_<bone>.png  weight edits of one bone (rig.py: 128 = none, 1 px per 4×4 source px)
+    masks/<inst>_s_<surface>.png  a drawn surface (RGBA, source size) — never observed pixels
     journal.jsonl          every accepted change: revision, time, source (user/ai/model), command
     previews/, exports/    rendered crops / previews and exports (can be deleted)
 
 Coordinates are pixels of the source picture after its EXIF orientation, origin top-left, y down.
+Version 2 adds the rig of each instance (posing, docs/RIG.md); version 1 documents are migrated
+on opening (the rig is added with defaults, nothing else changes).
 Every change goes through Project.execute(command, args, source=…, expected_revision=…): one
 command is one undo step; a list of commands in "transaction" is one step too, applied whole or
 not at all. The UI (app.py), the agent bridge and the MCP adapter (tools/posestage_mcp.py) call
@@ -29,7 +33,7 @@ import time
 
 from PIL import Image, ImageChops, ImageDraw, ImageOps
 
-SCHEMA, VERSION = "posestage.figure", 1
+SCHEMA, VERSION = "posestage.figure", 2
 BACKGROUND, UNKNOWN = 0, 254  # label values: not the figure / the figure, part not known
 
 # --- Taxonomy -------------------------------------------------------------------------------------
@@ -147,7 +151,12 @@ def empty_instance(iid, roi, foreground_source):
     return {"id": iid, "roi": [int(v) for v in roi], "foreground": {"source": foreground_source},
             "parts": {pid: {"state": "absent", "source": None, "locked": False, "review": "unreviewed", "diagnostics": []}
                       for pid in PARTS},
-            "joints": {}, "analysis": None, "proposal": None}
+            "joints": {}, "analysis": None, "proposal": None, "rig": _default_rig()}
+
+
+def _default_rig():
+    import rig
+    return rig.default_rig()
 
 
 # --- Project ------------------------------------------------------------------------------------
@@ -162,6 +171,8 @@ class Project:
         self._labels: dict[str, Image.Image] = {}
         self._uncertain: dict[str, Image.Image] = {}
         self._source: Image.Image | None = None
+        self._maps: dict[str, Image.Image | None] = {}  # weight edits and drawn surfaces; None = deleted
+        self._rig_cache = None
         self.undo_stack: list[dict] = []
         self.redo_stack: list[dict] = []
         self.listeners = []  # callables(change dict) — the UI is told about every change
@@ -211,8 +222,13 @@ class Project:
             doc = json.loads((folder / "figure.json").read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
             raise CommandError(f"Не удалось открыть проект: {error}", "not_found") from error
-        if doc.get("schema") != SCHEMA or doc.get("version") != VERSION:
+        if doc.get("schema") != SCHEMA or doc.get("version") not in (1, VERSION):
             raise CommandError("Неизвестная версия документа фигуры", "version")
+        if doc["version"] == 1:  # posing data added; the markup itself is unchanged
+            for inst in doc["instances"]:
+                inst.setdefault("rig", _default_rig())
+            doc["version"] = VERSION
+            doc["migrated_from"] = 1
         project = cls(folder, doc)
         source = folder / doc["source"]["file"]
         if not source.exists() or sha256_file(source) != doc["source"]["sha256"]:
@@ -225,6 +241,11 @@ class Project:
                 _write_atomic(self.folder / "masks" / f"{iid}_labels.png", _png(image))
             for iid, image in self._uncertain.items():
                 _write_atomic(self.folder / "masks" / f"{iid}_uncertain.png", _png(image))
+            for name, image in self._maps.items():
+                if image is None:
+                    (self.folder / "masks" / f"{name}.png").unlink(missing_ok=True)
+                else:
+                    _write_atomic(self.folder / "masks" / f"{name}.png", _png(image))
             _write_atomic(self.folder / "figure.json", json.dumps(self.doc, ensure_ascii=False, indent=1).encode("utf-8"))
             self._prune_proposals()
 
@@ -257,6 +278,20 @@ class Project:
             path = self.folder / "masks" / f"{iid}_uncertain.png"
             self._uncertain[iid] = Image.open(path).convert("L") if path.exists() else Image.new("L", self.labels(iid).size, 0)
         return self._uncertain[iid]
+
+    def map(self, name, create=None) -> Image.Image | None:
+        """A weight-edit or surface image by name (`<inst>_w_<bone>`, `<inst>_s_<id>`); `create`
+        makes it when missing: a callable returning the new image."""
+        if name not in self._maps:
+            path = self.folder / "masks" / f"{name}.png"
+            self._maps[name] = Image.open(path).copy() if path.exists() else None
+        if self._maps[name] is None and create is not None:
+            self._maps[name] = create()
+        return self._maps[name]
+
+    def drop_map(self, name):
+        self.map(name)
+        self._maps[name] = None
 
     def instance(self, iid=None) -> dict:
         instances = self.doc["instances"]
@@ -325,12 +360,14 @@ class Project:
     def _snapshot(self):
         return {"doc": copy.deepcopy(self.doc),
                 "labels": {iid: im.copy() for iid, im in self._labels.items()},
-                "uncertain": {iid: im.copy() for iid, im in self._uncertain.items()}}
+                "uncertain": {iid: im.copy() for iid, im in self._uncertain.items()},
+                "maps": {k: (im.copy() if im is not None else None) for k, im in self._maps.items()}}
 
     def _restore(self, snapshot):
         self.doc = snapshot["doc"]
         self._labels = snapshot["labels"]
         self._uncertain = snapshot["uncertain"]
+        self._maps = snapshot["maps"]
 
     def _diff(self, before, command, source, args):
         """The undo step of a finished command (None if nothing changed): the document before and
@@ -343,6 +380,18 @@ class Project:
                 if box:
                     images.append({"kind": kind, "iid": iid, "box": box,
                                    "before": _png(old.crop(box)) if old is not None else None, "after": _png(image.crop(box))})
+        for name in set(self._maps) | set(before["maps"]):
+            image, old = self._maps.get(name), before["maps"].get(name)
+            if image is None and old is None:
+                continue
+            if image is not None and old is not None and image.size == old.size and image.mode == old.mode:
+                box = ImageChops.difference(image, old).getbbox()
+                if box:
+                    images.append({"kind": "maps", "iid": name, "box": box, "before": _png(old.crop(box)),
+                                   "after": _png(image.crop(box))})
+            else:  # created or deleted: whole images
+                images.append({"kind": "maps", "iid": name, "box": None, "before": _png(old) if old is not None else None,
+                               "after": _png(image) if image is not None else None})
         doc_before = {k: v for k, v in before["doc"].items() if k != "revision"}
         doc_after = {k: v for k, v in self.doc.items() if k != "revision"}
         if not images and doc_before == doc_after:
@@ -352,6 +401,13 @@ class Project:
 
     def _apply_images(self, images, which):
         for item in images:
+            if item["kind"] == "maps":
+                data = item[which]
+                if item["box"] is None:
+                    self._maps[item["iid"]] = Image.open(io.BytesIO(data)).copy() if data is not None else None
+                else:
+                    self.map(item["iid"]).paste(Image.open(io.BytesIO(data)), item["box"][:2])
+                continue
             store = self._labels if item["kind"] == "labels" else self._uncertain
             target = store.get(item["iid"]) if item["iid"] in store else (
                 self.labels(item["iid"]) if item["kind"] == "labels" else self.uncertain(item["iid"]))
@@ -366,7 +422,8 @@ class Project:
 # Each takes the project, keyword arguments and `source`; returns a dict (merged into the reply).
 
 def _summary(command, args):
-    keys = [k for k in ("part_id", "joint_id", "entity_id", "part_ids", "target", "state", "locked") if k in args]
+    keys = [k for k in ("part_id", "joint_id", "bone_id", "chain_id", "entity_id", "part_ids", "target", "state", "locked",
+                        "angle", "operation", "surface_id", "time") if k in args]
     return command + ("(" + ", ".join(f"{k}={args[k]}" for k in keys) + ")" if keys else "")
 
 
@@ -767,8 +824,8 @@ def read_capabilities(project=None):
             "overlays": list(OVERLAYS), "states": list(STATES), "sources": list(SOURCES),
             "parts": {pid: {"value": p["value"], "parent": p["parent"], "name": p["name"], "color": p["color"]} for pid, p in PARTS.items()},
             "joints": {"body": list(BODY_JOINTS), "hand": list(HAND_POINTS)},
-            "not_yet": ["set_binding", "edit_weights", "set_layer_order", "set_joint_rotation", "set_ik_target",
-                        "set_keyframe", "export_frames"],
+            # export_frames is a background job of the application (parts_service), not a command
+            "not_yet": ["animation_curves", "animation_layers", "training_on_corrections"],
             "coordinates": "px of the oriented source picture, origin top-left, y down"}
 
 
@@ -1029,3 +1086,9 @@ def read_export(project, folder, instance_id=None):
 READS = {"get_capabilities": lambda project: read_capabilities(project), "get_document_summary": read_summary,
          "get_parts": read_parts, "get_joints": read_joints, "get_part": read_part, "get_mask": read_mask,
          "get_crop": read_crop, "validate": read_validate, "get_journal": read_journal, "export": read_export}
+
+
+# Posing and animation (docs/RIG.md): the same execute(), undo and journal. Each module adds its
+# commands to COMMANDS / READS itself (whichever of them is imported first).
+import rig_doc  # noqa: E402,F401
+import timeline  # noqa: E402,F401

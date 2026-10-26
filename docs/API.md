@@ -115,6 +115,12 @@ type Dance = {
 - `parts_analyze(project_id, mode: "full"|"masks") -> Job`, `parts_job(job_id)`, `parts_cancel(job_id)`;
   `Job = {job_id, status: "queued"|"running"|"done"|"error"|"cancelled", progress, stage, error, result}`.
 - `parts_export(project_id)` — диалог папки → экспорт; `parts_summary(project_id)`; `parts_close(project_id)`.
+- Позирование и анимация (docs/RIG.md) идут через тот же `parts_call`: команды `set_joint_rotation`,
+  `set_ik_target`, `set_root`, `reset_pose`, `set_contact`, `set_constraint`, `set_layer_order`, `set_binding`,
+  `edit_weights`, `add_surface`, `paint_surface`, `set_surface`, `set_keyframe`, `delete_keyframe`, `key_pose`,
+  `set_animation`; чтения `get_rig`, `get_pose`, `render_preview`, `validate_rig`, `get_animation`,
+  `check_animation`, `pose_mesh`, `pose_eval`. `parts_import_surface(project_id, part_id, above)` — диалог →
+  картинка-дорисовка; `parts_export_frames(project_id, options)` — диалог → фоновая задача экспорта кадров.
 - Бэкенд сообщает об изменениях (ход анализа, правки агента) вызовом
   `window.__partsChanged({project_id, revision, command, source} | {project_id, job})`.
 
@@ -182,8 +188,8 @@ pywebview (`new Function`), хэш importmap считается из `index.html
 Сервер обслуживает только `127.0.0.1`, префикс случайный:
 `/web/...`, `/poses/<file>` (только из allowlist каталога), `/thumbs/<file>`
 (миниатюры, кэш в `%APPDATA%\PoseStage\thumbs`),
-`/figures/<project id>/<instance>/(source|parts|uncertain|outline).png` — слои открытого проекта
-разметки, создаются в памяти. Папку поз программа не изменяет.
+`/figures/<project id>/<instance>/(source|parts|uncertain|outline|posed|rig_labels|w_<кость>|s_<id>).png` —
+слои открытого проекта разметки (поза, карта частей рига, веса кости, дорисовка), создаются в памяти. Папку поз программа не изменяет.
 
 Мост ИИ-агента (`agent_bridge.py`) — отдельный сервер `127.0.0.1:<порт>`: `POST /v1/call {tool, args}`
 с `Authorization: Bearer <token>`; порт и токен — в `%APPDATA%\PoseStage\agent_bridge.json`, пока
@@ -281,6 +287,7 @@ type App = {
 | Y | оживление позы (`view.setIdle`) | художник |
 | J | правка скелета (`set_joints`) | скелет |
 | U | разметка частей тела; внутри: 1–5 режимы, V B E N G J X R инструменты, [ ] кисть, Ctrl+Z / Ctrl+Y | разметка |
+| Tab в разметке | «Поза»: R I M C W P V инструменты, пробел — проиграть, «,» «.» — кадр, K — ключ позы | поза |
 | K, пробел, «,» «.» | танцы: список связок; во время танца — пауза, темп; Esc — стоп | танцы |
 | G | галерея миниатюр | навигация |
 | S | избранное | навигация |

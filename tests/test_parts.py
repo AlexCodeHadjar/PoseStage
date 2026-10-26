@@ -94,7 +94,8 @@ class FigureDocTests(unittest.TestCase):
         self.assertEqual(len(fd.HAND_POINTS), 21)
         caps = fd.read_capabilities()
         self.assertIn("left_hand.unsplit", caps["parts"])
-        self.assertIn("set_binding", caps["not_yet"])
+        self.assertNotIn("set_binding", caps["not_yet"])  # posing exists since stage 2
+        self.assertIn("set_binding", caps["commands"])
 
     def test_edit_mask_undo_redo(self):
         before = self.labels().copy()

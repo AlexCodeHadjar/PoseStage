@@ -39,6 +39,7 @@ _PART = {"type": "string", "description": "Id части: head, neck, chest, abd
                                           "left_hand.palm, left_hand.thumb … left_hand.pinky, left_hand.unsplit, left_thigh, "
                                           "left_shin, left_foot и то же для right_. Стороны — собственные стороны фигуры."}
 _XY = {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}
+_TIME = {"type": ["number", "null"], "description": "Время на таймлайне, с; без него — статическая поза."}
 _OVERRIDE = {"type": "boolean", "description": "Изменить зафиксированное пользователем. Только по явной просьбе пользователя."}
 
 
@@ -126,13 +127,113 @@ TOOLS = [
           ["commands"])),
     ("undo", "Отменить последнее изменение (любого источника).", _obj({"project_id": _P})),
     ("redo", "Повторить отменённое.", _obj({"project_id": _P})),
+    # --- Posing (docs/RIG.md) ---
+    ("get_rig", "Риг фигуры: кости (покой: начало, конец, длина, родитель), цепочки IK, какую кость вращает "
+                "сустав, привязка частей к костям, порядок слоёв, ограничения, опоры, поза, дорисовки, сетка.",
+     _obj({"project_id": _P, "instance_id": _I})),
+    ("get_pose", "Решённая поза: повороты костей после IK и опор, положения суставов в позе, промахи целей.",
+     _obj({"project_id": _P, "instance_id": _I, "time": _TIME})),
+    ("render_preview", "Посмотреть позу: картинка (pose — фигура в позе, skeleton, rest — исходник бледно, contacts, "
+                       "holes — открывшиеся места без рисунка). transform: source = preview / scale + offset.",
+     _obj({"project_id": _P, "instance_id": _I, "time": _TIME,
+           "overlays": {"type": "array", "items": {"enum": ["pose", "skeleton", "rest", "contacts", "holes"]}},
+           "region": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4},
+           "max_side": {"type": "integer", "minimum": 64, "maximum": 2048}})),
+    ("validate_rig", "Проверка рига и позы: непостроенные кости, пальцы без точек, недостигнутые цели IK, "
+                     "соскользнувшие опоры, ограниченные повороты, открывшиеся пустоты.",
+     _obj({"project_id": _P, "instance_id": _I, "time": _TIME})),
+    ("set_joint_rotation", "Повернуть кость: joint_id — сустав, в котором она вращается (elbow_l поворачивает левое "
+                           "предплечье, left_hand.index.pip — среднюю фалангу), или bone_id. angle — градусы от "
+                           "направления покоя, по часовой на картинке (y вниз); relative=true — прибавить. "
+                           "С time — ключ на таймлайне.",
+     _obj({"project_id": _P, "instance_id": _I, "joint_id": {"type": "string"}, "bone_id": {"type": "string"},
+           "angle": {"type": "number"}, "relative": {"type": "boolean"}, "time": _TIME, "expected_revision": _REV,
+           "override_lock": _OVERRIDE}, ["angle"])),
+    ("set_ik_target", "Дотянуться цепочкой (left_arm, right_leg, left_hand.index, head…) до точки [x, y] пикселей "
+                      "исходника; position=null снимает цель. Ответ — промах в px.",
+     _obj({"project_id": _P, "instance_id": _I, "chain_id": {"type": "string"},
+           "position": {"type": ["array", "null"], "items": {"type": "number"}}, "time": _TIME,
+           "expected_revision": _REV, "override_lock": _OVERRIDE}, ["chain_id", "position"])),
+    ("set_root", "Сдвинуть всю фигуру на [dx, dy] px (корень скелета). Опоры удерживают свои суставы.",
+     _obj({"project_id": _P, "instance_id": _I, "offset": _XY, "time": _TIME, "expected_revision": _REV,
+           "override_lock": _OVERRIDE}, ["offset"])),
+    ("reset_pose", "Вернуть позу покоя (или только перечисленные кости и цепочки).",
+     _obj({"project_id": _P, "instance_id": _I, "bones": {"type": "array", "items": {"type": "string"}},
+           "expected_revision": _REV, "override_lock": _OVERRIDE})),
+    ("set_contact", "Опора: держать сустав (стопа, пятка, носок, запястье, колено, локоть, кончик пальца) в точке, "
+                    "пока движется остальное. options {point, enabled, remove}; interval [t0, t1] — на таймлайне.",
+     _obj({"project_id": _P, "instance_id": _I, "entity_id": {"type": "string"},
+           "interval": {"type": ["array", "null"], "items": {"type": "number"}}, "options": {"type": "object"},
+           "expected_revision": _REV}, ["entity_id"])),
+    ("set_constraint", "Ограничить поворот кости: min / max градусов от покоя (null — свободно); bend 1 / -1 — "
+                       "в какую сторону сгибается двухзвенная цепочка (по её первой кости).",
+     _obj({"project_id": _P, "instance_id": _I, "bone_id": {"type": "string"}, "min": {"type": ["number", "null"]},
+           "max": {"type": ["number", "null"]}, "bend": {"enum": [1, -1, None]}, "expected_revision": _REV}, ["bone_id"])),
+    ("set_layer_order", "Порядок слоёв (сзади → вперёд): перечисленные части в этом порядке на своих местах, "
+                        "position front / back — наверх / вниз.",
+     _obj({"project_id": _P, "instance_id": _I, "part_ids": {"type": "array", "items": _PART},
+           "position": {"enum": ["front", "back", None]}, "expected_revision": _REV}, ["part_ids"])),
+    ("set_binding", "Какие кости двигают часть (bone_ids); options {reset: true} — по умолчанию.",
+     _obj({"project_id": _P, "instance_id": _I, "part_id": _PART, "bone_ids": {"type": "array", "items": {"type": "string"}},
+           "options": {"type": "object"}, "expected_revision": _REV}, ["part_id"])),
+    ("edit_weights", "Кисть весов кости: strokes [{points, radius}], operation add / subtract (на amount 0…1), "
+                     "smooth, reset. Веса нормируются по всем костям.",
+     _obj({"project_id": _P, "instance_id": _I, "bone_id": {"type": "string"},
+           "strokes": {"type": "array", "items": _obj({"points": {"type": "array", "items": _XY}, "radius": {"type": "number"}}, ["points"])},
+           "operation": {"enum": ["add", "subtract", "smooth", "reset"]}, "amount": {"type": "number", "minimum": 0, "maximum": 1},
+           "expected_revision": _REV}, ["bone_id", "strokes"])),
+    ("set_rig_settings", "Ячейка сетки (px) и ширина смешивания весов у суставов (px).",
+     _obj({"project_id": _P, "instance_id": _I, "cell": {"type": "integer", "minimum": 3, "maximum": 40},
+           "falloff": {"type": "number"}, "expected_revision": _REV})),
+    ("add_surface", "Новый слой-дорисовка, привязанный к части (двигается с её костью); рисуется под частью или над "
+                    "ней (above). Это не наблюдаемый рисунок: помечается как дорисованный.",
+     _obj({"project_id": _P, "instance_id": _I, "part_id": _PART, "name": {"type": "string"}, "above": {"type": "boolean"},
+           "expected_revision": _REV}, ["part_id"])),
+    ("paint_surface", "Рисовать (color [r, g, b] или [r, g, b, a]) или стирать (mode erase) круглой кистью на дорисовке.",
+     _obj({"project_id": _P, "instance_id": _I, "surface_id": {"type": "string"},
+           "strokes": {"type": "array", "items": _obj({"points": {"type": "array", "items": _XY}, "radius": {"type": "number"}}, ["points"])},
+           "color": {"type": "array", "items": {"type": "integer"}}, "mode": {"enum": ["paint", "erase"]},
+           "expected_revision": _REV}, ["surface_id", "strokes"])),
+    ("set_surface", "Свойства дорисовки: enabled, above, part_id, bone_id, name; remove=true — удалить.",
+     _obj({"project_id": _P, "instance_id": _I, "surface_id": {"type": "string"}, "enabled": {"type": "boolean"},
+           "above": {"type": "boolean"}, "part_id": _PART, "bone_id": {"type": "string"}, "name": {"type": "string"},
+           "remove": {"type": "boolean"}, "expected_revision": _REV}, ["surface_id"])),
+    # --- Animation (timeline.py) ---
+    ("get_animation", "Анимация: длительность, fps, цикл, дорожки ключей (rot:<кость> — градусы, root — [dx, dy], "
+                      "ik:<цепочка> — [x, y] или null).", _obj({"project_id": _P, "instance_id": _I})),
+    ("set_keyframe", "Ключ на дорожке в момент time (с): rot:<кость> | root | ik:<цепочка>; interpolation ease | linear | step. "
+                     "Повороты и цели можно ставить и через set_joint_rotation / set_ik_target с time.",
+     _obj({"project_id": _P, "instance_id": _I, "track_id": {"type": "string"}, "time": {"type": "number"},
+           "value": {}, "interpolation": {"enum": ["ease", "linear", "step"]}, "expected_revision": _REV,
+           "override_lock": _OVERRIDE}, ["track_id", "time", "value"])),
+    ("delete_keyframe", "Удалить ключ (time) или всю дорожку (без time).",
+     _obj({"project_id": _P, "instance_id": _I, "track_id": {"type": "string"}, "time": {"type": "number"},
+           "expected_revision": _REV}, ["track_id"])),
+    ("key_pose", "Запомнить текущую позу ключами в момент time (все повёрнутые кости, корень, цели).",
+     _obj({"project_id": _P, "instance_id": _I, "time": {"type": "number"},
+           "bones": {"type": "array", "items": {"type": "string"}}, "expected_revision": _REV}, ["time"])),
+    ("set_animation", "Длительность (с), fps (1…60), loop.",
+     _obj({"project_id": _P, "instance_id": _I, "duration": {"type": "number"}, "fps": {"type": "integer"},
+           "loop": {"type": "boolean"}, "expected_revision": _REV})),
+    ("check_animation", "Проверить кадры: где цели не достигнуты, опоры скользят, повороты упёрлись в ограничения. "
+                        "Смотреть такие кадры — render_preview с time.",
+     _obj({"project_id": _P, "instance_id": _I, "start": {"type": "number"}, "end": {"type": "number"},
+           "fps": {"type": "integer"}})),
+    ("export_frames", "Фоновый экспорт кадров PNG в папку проекта exports/ (тот же расчёт, что превью). options "
+                      "{start, end, fps, max_side, background [r, g, b, a], overlays}. Ход — job_status.",
+     _obj({"project_id": _P, "instance_id": _I, "options": {"type": "object"}})),
+    ("job_status", "Ход и итог фоновой задачи (анализ или экспорт кадров).", _obj({"job_id": {"type": "string"}}, ["job_id"])),
+    ("cancel_job", "Отменить фоновую задачу.", _obj({"job_id": {"type": "string"}}, ["job_id"])),
+    ("set_pose_locked", "Зафиксировать позу от изменений агентом (снять фиксацию может только пользователь).",
+     _obj({"project_id": _P, "instance_id": _I, "locked": {"type": "boolean"}}, ["locked"])),
     ("export", "Экспорт в папку проекта exports/: исходник, карта меток, цветное превью, маска каждой части, markup.json.",
      _obj({"project_id": _P, "instance_id": _I})),
 ]
 TOOL_NAMES = {name for name, _, _ in TOOLS}
 INSTRUCTIONS = ("PoseStage: разметка фигуры на части тела, кисти и пальцы. Координаты — пиксели исходной картинки, "
                 "начало слева сверху, y вниз. Сначала get_document_summary и get_crop (посмотреть), потом правки. "
-                "Передавайте expected_revision. Не снимайте фиксацию пользователя без его просьбы. Состояние uncertain "
+                "Передавайте expected_revision. Позирование: get_rig → set_joint_rotation / set_ik_target / set_contact → "
+                "render_preview → validate_rig. Не снимайте фиксацию пользователя без его просьбы. Состояние uncertain "
                 "и диагностику validate сообщайте пользователю честно.")
 
 
@@ -207,7 +308,7 @@ def tool_result(bridge, name, args):
         return {"content": [{"type": "text", "text": text}], "isError": True}
     result = reply["result"]
     content = [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]
-    if name in ("get_crop", "get_mask") and isinstance(result, dict) and result.get("file"):
+    if name in ("get_crop", "get_mask", "render_preview") and isinstance(result, dict) and result.get("file"):
         image = _image_content(result["file"])
         if image:
             content.insert(0, image)

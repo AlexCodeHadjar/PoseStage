@@ -314,12 +314,64 @@ class PartsService:
             shutil.rmtree(work, ignore_errors=True)
             self._changed({"project_id": job.project_id, "job": job.public()})
 
+    # --- animation frames (docs/RIG.md § Анимация) ---
+    def export_frames(self, project_id=None, folder=None, instance_id=None, options=None, source="user"):
+        """A background job writing the animation's PNG frames into `folder` (default: the
+        project's exports/); same Job interface as analysis (job, cancel)."""
+        import timeline
+        project = self.project(project_id)
+        inst = project.instance(instance_id)
+        options = dict(options or {})
+        allowed = {"start", "end", "fps", "max_side", "background", "overlays"}
+        if set(options) - allowed:
+            raise fd.CommandError(f"options: {', '.join(sorted(allowed))}")
+        folder = Path(folder) if folder else project.folder / "exports" / f"{time.strftime('%Y%m%d-%H%M%S')}-frames"
+        with self.lock:
+            if self.active_job(project.doc["id"]):
+                raise fd.CommandError("Для этой фигуры уже идёт задача", "busy")
+            job = Job(project.doc["id"], inst["id"], "frames", source)
+            self.jobs[job.id] = job
+
+        def work():
+            job.status = "running"
+            try:
+                def progress(done, total):
+                    job.progress, job.stage = done / total, f"кадр {done} из {total}"
+                    self._changed({"project_id": job.project_id, "job": job.public()})
+                job.result = timeline.export_frames(project, folder, inst["id"], progress=progress,
+                                                    cancelled=lambda: job.cancelled, **options)
+                job.status, job.progress = "done", 1.0
+            except Exception as error:  # noqa: BLE001
+                if job.cancelled:
+                    job.status = "cancelled"
+                else:
+                    logging.exception("Frame export failed")
+                    job.status, job.error = "error", str(error)
+            finally:
+                self._changed({"project_id": job.project_id, "job": job.public()})
+        threading.Thread(target=work, daemon=True, name=f"frames-{job.id}").start()
+        return job.public()
+
     # --- images for the window ---
     def layer_png(self, project_id, instance_id, kind) -> bytes:
         project = self.project(project_id)
         with project.lock:
             if kind == "source":
                 image = project.source()
+            elif kind == "posed":  # the current pose, full size, transparent (docs/RIG.md)
+                import rig_doc
+                image, _ = rig_doc.render_pose(project, instance_id, overlays=("pose",), background=(0, 0, 0, 0),
+                                               max_side=max(project.doc["source"]["width"], project.doc["source"]["height"]))
+            elif kind == "rig_labels":  # labels with the unknown pixels given to a part, as the mesh uses them
+                import rig_doc
+                image = rig_doc.rig_of(project, instance_id).mesh.labels
+            elif kind.startswith("s_"):
+                image = project.map(f"{instance_id}_{kind}")
+                if image is None:
+                    raise fd.CommandError("Нет дорисовки", "not_found")
+            elif kind.startswith("w_"):
+                import rig_doc
+                image = rig_doc.weights_layer(project, instance_id, kind[2:])
             else:
                 image = fd.layer(project, kind, instance_id)
             return fd._png(image)

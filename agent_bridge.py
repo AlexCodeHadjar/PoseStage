@@ -31,11 +31,23 @@ MAX_BODY = 4 * 1024 * 1024
 WRITE = {"edit_mask": "edit_mask", "refine_mask": "refine_mask", "split_part": "split_part", "merge_parts": "merge_parts",
          "label": "relabel", "set_joint": "set_joint", "set_visibility": "set_visibility", "lock": "set_locked",
          "set_review": "set_review", "set_roi": "set_roi", "apply_proposal": "apply_proposal",
-         "discard_proposal": "discard_proposal", "transaction": "transaction", "undo": "undo", "redo": "redo"}
+         "discard_proposal": "discard_proposal", "transaction": "transaction", "undo": "undo", "redo": "redo",
+         # posing (docs/RIG.md)
+         "set_joint_rotation": "set_joint_rotation", "set_root": "set_root", "set_ik_target": "set_ik_target",
+         "reset_pose": "reset_pose", "set_pose_locked": "set_pose_locked", "set_contact": "set_contact",
+         "set_constraint": "set_constraint", "set_layer_order": "set_layer_order", "set_binding": "set_binding",
+         "edit_weights": "edit_weights", "set_rig_settings": "set_rig_settings", "add_surface": "add_surface",
+         "paint_surface": "paint_surface", "set_surface": "set_surface",
+         # animation
+         "set_keyframe": "set_keyframe", "delete_keyframe": "delete_keyframe", "set_animation": "set_animation",
+         "key_pose": "key_pose"}
 READ = {"get_capabilities": "get_capabilities", "get_document_summary": "get_document_summary", "get_parts": "get_parts",
         "get_joints": "get_joints", "get_part": "get_part", "get_mask": "get_mask", "get_crop": "get_crop",
         "validate": "validate", "get_journal": "get_journal"}
-SERVICE = ("list_projects", "analyze", "analysis_status", "cancel_analysis", "export")
+READ.update({"get_rig": "get_rig", "get_pose": "get_pose", "render_preview": "render_preview",
+             "validate_rig": "validate_rig", "get_animation": "get_animation", "check_animation": "check_animation"})
+SERVICE = ("list_projects", "analyze", "analysis_status", "cancel_analysis", "export", "export_frames", "job_status",
+           "cancel_job")
 
 
 def call_tool(service, tool, args):
@@ -61,9 +73,11 @@ def call_tool(service, tool, args):
         return service.call(project_id, command, args, source="ai", expected_revision=expected)
     if tool == "analyze":
         return service.analyze(project_id, args.get("instance_id"), args.get("mode", "full"), source="ai")
-    if tool == "analysis_status":
+    if tool in ("analysis_status", "job_status"):
         return service.job(args.get("job_id"))
-    if tool == "cancel_analysis":
+    if tool == "export_frames":  # into the project's exports/ only
+        return service.export_frames(project_id, None, args.get("instance_id"), args.get("options"), source="ai")
+    if tool in ("cancel_analysis", "cancel_job"):
         return service.cancel(args.get("job_id"))
     if tool == "export":  # only into the project's own exports/ folder
         project = service.project(project_id)

@@ -10,7 +10,7 @@ if defined POSESTAGE_PYTHON (
 )
 "%PYTHON%" -c "import sys; assert sys.version_info[:2] == (3,12), 'Python 3.12 required'"
 if errorlevel 1 goto fail
-"%PYTHON%" -m PyInstaller --noconfirm --clean --onefile --windowed --name PoseStage --icon icon.ico --add-data "web;web" --add-data "parts_analyzer.py;." --add-data "figure_doc.py;." --hidden-import parts_service --hidden-import agent_bridge app.py
+"%PYTHON%" -m PyInstaller --noconfirm --clean --onefile --windowed --name PoseStage --icon icon.ico --add-data "web;web" --add-data "parts_analyzer.py;." --add-data "figure_doc.py;." --add-data "rig.py;." --add-data "rig_doc.py;." --add-data "timeline.py;." --hidden-import parts_service --hidden-import agent_bridge app.py
 if errorlevel 1 goto fail
 echo Built: %~dp0dist\PoseStage.exe
 exit /b 0

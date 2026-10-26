@@ -4,6 +4,8 @@
 // agent bridge, with one undo history. Analysis runs in a separate process (parts_service.py);
 // its result goes in directly while the figure is untouched, otherwise as a proposal.
 
+import { createPose } from './pose.js';
+
 const GROUP = 'Разметка';
 const LAYER_ID = 'parts-editor';
 const MODES = [
@@ -101,6 +103,7 @@ export function install(app) {
   let colorToPart = new Map();
   const view = { s: 1, ox: 0, oy: 0 };
   let drag = null; // current pointer gesture
+  let editor = 'markup'; // markup | pose (docs/RIG.md)
 
   // --- DOM ------------------------------------------------------------------------------
   const openButton = button('parts-open', '', 'Разметка частей тела (U)');
@@ -130,7 +133,13 @@ export function install(app) {
   const validateButton = button('parts-btn', 'Проверить', 'Диагностика: пустые части, суставы вне фигуры, стороны…');
   const exportButton = button('parts-btn', 'Экспорт…', 'Исходник, карта меток, маски частей и JSON в выбранную папку');
   const closeButton = button('parts-btn subtle', '✕', 'Закрыть (Esc)');
-  top.append(title, meta, openMenu, el('span', 'parts-spacer'), progress, analyzeButton, masksButton, undoButton, redoButton,
+  const editorSwitch = el('div', 'parts-switch');
+  const markupTab = button('parts-chip on', 'Разметка', 'Части, суставы, кисти');
+  const poseTab = button('parts-chip', 'Поза', 'Поворот костей, IK, опоры, слои, веса, дорисовки');
+  editorSwitch.append(markupTab, poseTab);
+  markupTab.addEventListener('click', () => setEditor('markup'));
+  poseTab.addEventListener('click', () => setEditor('pose'));
+  top.append(title, meta, openMenu, editorSwitch, el('span', 'parts-spacer'), progress, analyzeButton, masksButton, undoButton, redoButton,
     validateButton, exportButton, closeButton);
 
   const proposal = el('div', 'parts-proposal');
@@ -187,13 +196,29 @@ export function install(app) {
   splitLabel.append('Куда ', splitTarget);
   toolbar.append(modeBar, toolBar, sizeLabel, splitLabel, opacityLabel);
   const status = el('div', 'parts-status');
-  stage.append(toolbar, canvas, status);
+  const canvasWrap = el('div', 'parts-canvas-wrap');
+  stage.append(toolbar, canvasWrap, status);
 
   const details = el('div', 'parts-details');
   body.append(side, stage, details);
   const toastBox = el('div', 'parts-toast');
   toastBox.setAttribute('role', 'status');
   layer.append(top, proposal, notice, body, toastBox);
+
+  // The posing mode works on the same view, canvas and commands (web/ui/pose.js).
+  const pose = createPose({
+    api: () => app.api, pid: () => pid, iid: () => iid, caps: () => caps, view, canvas, toScreen: (x, y) => toScreen(x, y),
+    call: (command, args) => call(command, args), run: (command, args) => run(command, args), toast: (t, e) => toast(t, e),
+    draw: () => draw(), loadImage: (url) => loadImage(url), layerUrl: (kind) => layerUrl(kind), sourceImage: () => images.source,
+    renderPanels: () => { renderList(); renderDetails(); }, status: (text) => { status.textContent = text; },
+    refresh: () => refresh(),
+  });
+  canvasWrap.append(pose.glCanvas, canvas);
+  window.__partsEditor = { view, pose: pose.debug, toScreen: (x, y) => toScreen(x, y), canvas }; // diagnostics (tests)
+  toolbar.after(pose.toolbar);
+  pose.toolbar.hidden = true;
+  canvasWrap.after(pose.timeline);
+  pose.timeline.hidden = true;
   document.body.append(openButton, layer);
 
   function toast(text, error = false) {
@@ -246,6 +271,13 @@ export function install(app) {
     const changed = project.revision !== revision;
     revision = project.revision;
     if (changed) await loadLayers();
+    if (editor === 'pose') {
+      try {
+        await pose.refresh();
+      } catch (error) {
+        toast(String(error.message || error), true);
+      }
+    }
     renderTop();
     renderList();
     renderDetails();
@@ -287,6 +319,7 @@ export function install(app) {
     images.source = null;
     issues = null;
     selectedJoint = null;
+    pose.reset();
     job = summary.job;
     await refresh();
     fit();
@@ -323,6 +356,7 @@ export function install(app) {
 
   function close() {
     if (!isOpen()) return;
+    pose.stop();
     layer.hidden = true;
     document.body.classList.remove('parts-open-editor');
     app.overlays.close(LAYER_ID);
@@ -479,7 +513,31 @@ export function install(app) {
     notice.hidden = !lines.length;
   }
 
+  function setEditor(which) {
+    editor = which;
+    markupTab.classList.toggle('on', which === 'markup');
+    poseTab.classList.toggle('on', which === 'pose');
+    toolbar.hidden = which === 'pose';
+    pose.toolbar.hidden = which !== 'pose';
+    pose.timeline.hidden = which !== 'pose';
+    if (which !== 'pose') pose.stop();
+    pose.glCanvas.style.visibility = which === 'pose' ? 'visible' : 'hidden';
+    canvas.dataset.tool = which === 'pose' ? canvas.dataset.tool : tool;
+    resizeCanvas();
+    if (which === 'pose' && pid) {
+      pose.refresh().catch((error) => toast(String(error.message || error), true));
+    } else {
+      renderList();
+      renderDetails();
+      draw();
+    }
+  }
+
   function renderList() {
+    if (editor === 'pose') {
+      pose.renderSide(partList);
+      return;
+    }
     partList.replaceChildren();
     if (!caps) return;
     const groups = new Map();
@@ -525,6 +583,10 @@ export function install(app) {
   }
 
   function renderDetails() {
+    if (editor === 'pose') {
+      pose.renderDetails(details);
+      return;
+    }
     details.replaceChildren();
     if (!pid) {
       details.append(el('p', 'parts-muted', 'Откройте позу, картинку или проект.'));
@@ -604,6 +666,7 @@ export function install(app) {
     const dpr = window.devicePixelRatio || 1;
     canvas.width = Math.max(1, Math.round(rect.width * dpr));
     canvas.height = Math.max(1, Math.round(rect.height * dpr));
+    pose.resize();
     draw();
   }
 
@@ -627,6 +690,10 @@ export function install(app) {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (!images.source) return;
+    if (editor === 'pose') {
+      pose.draw2d(ctx, view);
+      return;
+    }
     ctx.setTransform(dpr * view.s, 0, 0, dpr * view.s, dpr * view.ox, dpr * view.oy);
     ctx.imageSmoothingEnabled = view.s < 2;
     const w = images.source.naturalWidth;
@@ -771,8 +838,12 @@ export function install(app) {
     const sx = event.clientX - rect.left;
     const sy = event.clientY - rect.top;
     const at = toSource(sx, sy);
-    if (event.button === 1 || event.button === 2 || tool === 'view' || event.shiftKey && tool !== 'joints') {
+    if (event.button === 1 || event.button === 2 || (editor === 'markup' && tool === 'view') || event.shiftKey && tool !== 'joints') {
       drag = { kind: 'pan', x: event.clientX, y: event.clientY };
+      return;
+    }
+    if (editor === 'pose') {
+      if (!pose.pointerDown(event, sx, sy, at)) drag = { kind: 'pan', x: event.clientX, y: event.clientY };
       return;
     }
     if (event.ctrlKey) { // pick the part under the cursor
@@ -808,6 +879,10 @@ export function install(app) {
     const rect = canvas.getBoundingClientRect();
     const sx = event.clientX - rect.left;
     const sy = event.clientY - rect.top;
+    if (editor === 'pose' && !drag) {
+      pose.pointerMove(event, sx, sy, toSource(sx, sy));
+      return;
+    }
     if (!drag) {
       const found = partAt(sx, sy);
       const [x, y] = toSource(sx, sy).map(Math.round);
@@ -849,6 +924,10 @@ export function install(app) {
   });
 
   async function finishGesture() {
+    if (editor === 'pose' && !drag) {
+      await pose.pointerUp();
+      return;
+    }
     const gesture = drag;
     drag = null;
     if (!gesture) return;
@@ -926,7 +1005,7 @@ export function install(app) {
       if (drag) {
         drag = null;
         draw();
-      } else {
+      } else if (!(editor === 'pose' && pose.cancel())) {
         close();
       }
     } else if (ctrl && event.code === 'KeyZ') {
@@ -935,13 +1014,18 @@ export function install(app) {
     } else if (ctrl && event.code === 'KeyY') {
       event.preventDefault();
       history('redo');
+    } else if (editor === 'pose' && !ctrl && pose.key(event)) {
+      // a posing tool key
     } else if (!ctrl && event.code === 'BracketLeft') {
       sizeInput.value = String(Math.max(1, radius - (radius > 10 ? 3 : 1)));
       sizeInput.dispatchEvent(new Event('input'));
     } else if (!ctrl && event.code === 'BracketRight') {
       sizeInput.value = String(Math.min(80, radius + (radius >= 10 ? 3 : 1)));
       sizeInput.dispatchEvent(new Event('input'));
-    } else if (!ctrl && /^Digit[1-5]$/.test(event.code)) {
+    } else if (!ctrl && event.code === 'Tab') {
+      event.preventDefault();
+      setEditor(editor === 'markup' ? 'pose' : 'markup');
+    } else if (!ctrl && /^Digit[1-5]$/.test(event.code) && editor === 'markup') {
       setMode(MODES[Number(event.code.slice(5)) - 1][0]);
     } else if (!ctrl && event.code === 'KeyF') {
       fit();
@@ -963,7 +1047,7 @@ export function install(app) {
   app.shortcuts.register({
     keys: [],
     hint: 'В разметке',
-    title: '1–5 режим показа; V B E N G J X R — инструменты; [ ] — кисть; Ctrl+клик — взять часть; Shift/правая кнопка — двигать; Ctrl+Z / Ctrl+Y',
+    title: '1–5 режим показа; V B E N G J X R — инструменты; [ ] — кисть; Ctrl+клик — взять часть; Shift/правая кнопка — двигать; Ctrl+Z / Ctrl+Y; Tab — «Поза»: R поворот, I дотянуться, M сдвиг, C опора, W веса, P дорисовка',
     group: GROUP,
   });
   setMode('markup');
