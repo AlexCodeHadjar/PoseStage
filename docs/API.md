@@ -70,10 +70,16 @@ type Pose = {
 
 ### Танцы (docs/DANCE.md)
 
-- `get_dances() -> {status: "ready"|"working"|"error", phrases: Dance[], error: string|null}` — связки
-  активной коллекции. Поиск идёт в фоне (`dance.load_styles` + `dance.find_phrases`; первый раз
-  читает все рисунки, около минуты на 300 поз) и хранится, пока не изменятся позы, их скелеты или
-  опоры. Пока `"working"` — вызвать ещё раз позже.
+- `get_dances() -> {status: "ready"|"working"|"error", phrases: Dance[], storyboards: Dance[], error: string|null}`
+  — танцы активной коллекции.
+  - `storyboards` — готовые танцы по раскадровке (`dance.storyboards`): кадры `dance_<NN>_<ИМЯ>__<кадр>__<секунды>s__pose-<k>.png`
+    по порядку, `kind: "storyboard"`, `times`, `bpm` (свой темп видео), названия из `*/manifest.json`
+    коллекции. Кадру без найденного скелета даётся средний между соседями (`joints_source: "estimated"`).
+    Отдаются сразу.
+  - `phrases` — связки, найденные среди остальных поз (кадры танцев в поиск не входят). Поиск идёт в фоне
+    (`dance.load_styles` + `dance.find_phrases`; первый раз читает все рисунки, около минуты на 300 поз);
+    результат хранится в `dances_cache.json`, пока не изменятся позы, их скелеты или опоры. Пока
+    `"working"` — вызвать ещё раз позже.
 
 ```ts
 type Dance = {

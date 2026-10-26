@@ -3,7 +3,9 @@ docs/SKELETON.md) for the pose animation and the skeleton editor.
 
 Dev-only: needs `pip install mediapipe==0.10.14 "numpy<2"` in a separate environment; the
 program itself only reads the JSON. Usage:
-    python tools/detect_joints.py "D:\\Позы"
+    python tools/detect_joints.py "D:\\Позы"                     (top-level PNGs; replaces the file)
+    python tools/detect_joints.py --merge "D:\\Позы\\dance" ...   (subfolders too; adds to the file)
+Skeletons are keyed by the bare file name, so a pose finds its own in any subfolder.
 Each pose is tried with several paddings / backgrounds until MediaPipe Pose finds a skeleton.
 Poses without one fall back to a template skeleton at run time (the editor can fix both).
 """
@@ -83,20 +85,38 @@ def skeleton(points, image):
     return {"version": 2, "view": view, "points": out}
 
 
-def main(folder: Path):
+# MediaPipe landmark pairs (left, right): swapped back after looking at a mirrored picture.
+PAIRS = [(1, 4), (2, 5), (3, 6), (7, 8), (9, 10), (11, 12), (13, 14), (15, 16), (17, 18), (19, 20),
+         (21, 22), (23, 24), (25, 26), (27, 28), (29, 30), (31, 32)]
+
+
+def main(folders: list[Path], merge=False):
+    """With `merge`, poses already in the file keep their skeleton; only new ones are searched."""
     models = {c: mp.solutions.pose.Pose(static_image_mode=True, model_complexity=c) for c in (1, 2)}
-    result = {}
-    files = sorted(p for p in folder.iterdir() if p.suffix.lower() == ".png")
+    result = json.loads(OUT.read_text(encoding="utf-8")).get("poses", {}) if merge and OUT.exists() else {}
+    files = sorted({p for folder in folders
+                    for p in (folder.rglob("*") if merge else folder.iterdir()) if p.suffix.lower() == ".png"})
     for path in files:
+        if path.name.casefold() in result:
+            continue
         image = Image.open(path).convert("RGBA")
-        for complexity, pad, gray in VARIANTS:
-            found = models[complexity].process(render(image, pad, gray))
-            if not found.pose_landmarks:
-                continue
-            width, height = image.width + 2 * pad, image.height + 2 * pad
-            points = [(p.x * width - pad, p.y * height - pad, p.visibility) for p in found.pose_landmarks.landmark]
-            result[path.name.casefold()] = skeleton(points, image)
-            break
+        # The picture as it is, then mirrored: the model sometimes finds only one of the two.
+        for mirrored in (False, True):
+            source = image.transpose(Image.FLIP_LEFT_RIGHT) if mirrored else image
+            for complexity, pad, gray in VARIANTS:
+                found = models[complexity].process(render(source, pad, gray))
+                if not found.pose_landmarks:
+                    continue
+                width, height = image.width + 2 * pad, image.height + 2 * pad
+                points = [(p.x * width - pad, p.y * height - pad, p.visibility) for p in found.pose_landmarks.landmark]
+                if mirrored:
+                    points = [(image.width - x, y, v) for x, y, v in points]
+                    for left, right in PAIRS:
+                        points[left], points[right] = points[right], points[left]
+                result[path.name.casefold()] = skeleton(points, image)
+                break
+            if path.name.casefold() in result:
+                break
         print(f"{path.name}: {'ok' if path.name.casefold() in result else 'not found'}", flush=True)
     OUT.write_text(json.dumps({"version": 2, "poses": result}, ensure_ascii=False, separators=(",", ":")),
                    encoding="utf-8")
@@ -104,4 +124,4 @@ def main(folder: Path):
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]))
+    main([Path(a) for a in sys.argv[1:] if a != "--merge"], merge="--merge" in sys.argv[1:])

@@ -177,6 +177,30 @@ test('dance transitions (scene/dance.js) match dance_motion.py', () => {
   deepEqual(twice.support.profile, [...original.support.profile].sort((a, b) => a[0] - b[0] || a[1] - b[1]), 'profile back');
 });
 
+test('a dance figure is prepared in slices, then animates from what was prepared', () => {
+  const pose = { ...FIXTURE_POSES[1], joints: templateJoints(FIXTURE_POSES[1], 'front') };
+  const figure = new Figure(pose, new THREE.Texture(), new THREE.Scene(), new THREE.Scene(), { soft: true });
+  const camera = makeCamera(frameCamera, 1280, 800).camera;
+  figure.fit(camera);
+  const rig = createDanceRig(jointPoints(pose));
+  figure.setRig(rig);
+  let calls = 0;
+  const prepare = rig.prepare;
+  rig.prepare = (...args) => { calls++; return prepare(...args); };
+  equal(figure.prepareAnimation(performance.now() - 1), false, 'a passed deadline stops at once');
+  let rounds = 0;
+  while (!figure.prepareAnimation(performance.now() + 1)) rounds++;
+  assert(figure.prepared && calls > 1, 'finished over several calls');
+  equal(figure.prepareAnimation(), true, 'nothing left');
+  rig.setTarget(jointPoints(pose));
+  figure.animate(camera, 1);
+  const out = [9, 9];
+  const [x, y] = jointPoints(pose).wrist_l;
+  equal(rig.displace(x, y, 0, 0, out), out, 'writes into the given array');
+  near(out[0], 0, 1e-9, 'rest pose: no displacement');
+  figure.dispose();
+});
+
 test('TextureCache uploads a loaded texture right away (no hitch when the transition starts)', async () => {
   const uploaded = [];
   const renderer = { capabilities: { getMaxAnisotropy: () => 1 }, initTexture: (texture) => uploaded.push(texture) };

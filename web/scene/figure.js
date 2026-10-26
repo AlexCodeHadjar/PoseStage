@@ -88,6 +88,7 @@ export class Figure {
     stageScene.add(this.shadow);
 
     this.ground = new THREE.Vector3();
+    this.offset = [0, 0]; // reused displacement of one vertex (no garbage per vertex per frame)
     this.time = null; // idle animation time in seconds, null when still
   }
 
@@ -130,6 +131,38 @@ export class Figure {
     return cached;
   }
 
+  // Everything animate() builds on first use (rig, per-vertex source points, the animated shadow
+  // strip, a dance rig's skin weights) — tens of ms that would otherwise land in the first frame
+  // this drawing moves. Works until performance.now() passes `deadline` and goes on from there
+  // on the next call; returns true once all is done (also sets `prepared`).
+  prepareAnimation(deadline = Infinity) {
+    if (this.prepared) return true;
+    const rig = this.rig;
+    if (!this.preparing) {
+      this.shadowRows(SHADOW_ROWS_ANIMATED);
+      const [x1, y1, x2, y2] = this.pose.box;
+      const base = this.basePositions;
+      const mesh = this.vertices(this.geometry, (i) => [
+        x1 + (base[i * 3] + 0.5) * (x2 - x1),
+        y2 - (base[i * 3 + 1] + 0.5) * (y2 - y1),
+      ]);
+      const uv = this.shadowGeometry.attributes.uv;
+      const shadow = this.vertices(this.shadowGeometry, (i) => this.uvToSource(uv.getX(i), uv.getY(i)));
+      this.preparing = { lists: [mesh.sources, shadow.sources], list: 0, at: 0 };
+    }
+    const job = this.preparing;
+    while (job.list < job.lists.length) {
+      const sources = job.lists[job.list];
+      job.at = rig.prepare ? rig.prepare(sources, job.at, deadline) : sources.length / 2;
+      if (job.at < sources.length / 2) return false;
+      job.list++;
+      job.at = 0;
+    }
+    this.preparing = null;
+    this.prepared = true;
+    return true;
+  }
+
   // Swap the shadow strip between the still (1 row) and animated (16 rows) density.
   shadowRows(rows) {
     if (this.shadowGeometry.parameters.heightSegments === rows) return;
@@ -156,9 +189,10 @@ export class Figure {
         x1 + (base[i * 3] + 0.5) * width,
         y2 - (base[i * 3 + 1] + 0.5) * height,
       ]);
+      const d = this.offset;
       for (let i = 0; i < positions.count; i++) {
-        const [dx, dy] = rig.displace(sources[i * 2], sources[i * 2 + 1], time, locks[i]);
-        positions.setXY(i, base[i * 3] + dx / width, base[i * 3 + 1] - dy / height);
+        rig.displace(sources[i * 2], sources[i * 2 + 1], time, locks[i], d);
+        positions.setXY(i, base[i * 3] + d[0] / width, base[i * 3 + 1] - d[1] / height);
       }
     }
     positions.needsUpdate = true;
@@ -200,8 +234,18 @@ export class Figure {
     let dx = 0;
     let dy = 0;
     for (let i = 0; i < positions.count; i++) {
-      const [sourceX, sourceY] = animated ? [sources[i * 2], sources[i * 2 + 1]] : this.uvToSource(uv.getX(i), uv.getY(i));
-      if (animated) [dx, dy] = this.rig.displace(sourceX, sourceY, time, locks[i]);
+      let sourceX;
+      let sourceY;
+      if (animated) {
+        sourceX = sources[i * 2];
+        sourceY = sources[i * 2 + 1];
+        const d = this.rig.displace(sourceX, sourceY, time, locks[i], this.offset);
+        dx = d[0];
+        dy = d[1];
+      } else {
+        sourceX = (this.mirror ? 1 - uv.getX(i) : uv.getX(i)) * this.pose.w;
+        sourceY = (1 - uv.getY(i)) * this.pose.h;
+      }
       const px = mapping.centerX + (sourceX + dx - cx) * scale;
       const py = mapping.centerY + (cy - sourceY - dy) * scale;
       const gy = mapping.centerY + (cy - baselineAt(this.pose, sourceX, threshold)) * scale;

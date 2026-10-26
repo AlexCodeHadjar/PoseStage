@@ -421,3 +421,91 @@ def find_phrases(poses: list[dict], limit=40, styles: dict | None = None) -> lis
                         "poses": [{"file": nodes[k]["file"], "mirror": nodes[k]["mirror"]} for k in path],
                         "loop": loop, "score": round(quality, 4)})
     return phrases
+
+
+# --- Storyboards: dances already ordered and timed by their author --------------------------------
+# A frame of a storyboard dance is named dance_<NN>_<NAME>__<frame>__<seconds>s__pose-<k>.png
+# (e.g. dance_04_TWICE_TT__003__01.000s__pose-01.png): its place and time in the dance are given,
+# nothing has to be matched. Other dance_<NN>_* drawings (overview sheets) repeat those frames.
+STORYBOARD_FRAME = re.compile(r"^dance_(\d+)_(.+?)__(\d{3})__(\d+(?:\.\d+)?)s__pose-\d+\.\w+$", re.I)
+DANCE_DRAWING = re.compile(r"^dance_\d+_", re.I)
+
+
+def is_dance_drawing(file: str) -> bool:
+    """A drawing of a storyboard dance: never matched into found phrases."""
+    return bool(DANCE_DRAWING.match(file.rsplit("/", 1)[-1]))
+
+
+def storyboard_titles(root: Path | None) -> dict:
+    """{"01_JISOO_FLOWER": "JISOO — FLOWER"} from the storyboards' manifest.json files (a folder
+    of the collection, one level down), if there are any."""
+    titles = {}
+    for manifest in (root.glob("*/manifest.json") if root and root.is_dir() else ()):
+        try:
+            entries = json.loads(manifest.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        for entry in entries if isinstance(entries, list) else ():
+            if isinstance(entry, dict) and isinstance(entry.get("folder"), str) and isinstance(entry.get("title"), str):
+                titles[entry["folder"].upper()] = entry["title"]
+    return titles
+
+
+def between_skeleton(pose: dict, before: dict | None, after: dict | None) -> dict | None:
+    """A skeleton for a storyboard frame the detector missed: the middle of its neighbours'
+    skeletons (0.5 s apart), each taken relative to its own box and fitted to this frame's box."""
+    def relative(neighbour):
+        joints = (neighbour or {}).get("joints")
+        if not (isinstance(joints, dict) and joints.get("version") == 2):
+            return None
+        x1, y1, x2, y2 = neighbour["box"]
+        return joints, {k: ((p["xy"][0] - x1) / max(1, x2 - x1), (p["xy"][1] - y1) / max(1, y2 - y1))
+                        for k, p in joints["points"].items() if p.get("xy") and p.get("state") != "absent"}
+    sides = [r for r in (relative(before), relative(after)) if r]
+    if not sides:
+        return None
+    x1, y1, x2, y2 = pose["box"]
+    points = {}
+    for key in sides[0][0]["points"]:
+        found = [rel[key] for _, rel in sides if key in rel]
+        if not found:
+            points[key] = {"state": "absent"}
+            continue
+        u = sum(f[0] for f in found) / len(found)
+        v = sum(f[1] for f in found) / len(found)
+        points[key] = {"xy": [round(x1 + u * (x2 - x1), 1), round(y1 + v * (y2 - y1), 1)], "state": "visible"}
+    return {"version": 2, "view": sides[0][0].get("view", "front"), "points": points}
+
+
+def storyboards(poses: list[dict], titles: dict | None = None) -> list[dict]:
+    """The storyboard dances of a collection, frames in their order:
+    [{id, name, kind: "storyboard", poses: [{file, mirror, joints?}], times, bpm, loop, score}].
+    One pose per count; `bpm` is the dance's own tempo (17 frames 0.5 s apart → 120). A frame
+    without a skeleton gets one between its neighbours' (`joints`)."""
+    groups = {}
+    for pose in poses:
+        found = STORYBOARD_FRAME.match(pose["file"].rsplit("/", 1)[-1])
+        if found:
+            number, name, frame, seconds = found.groups()
+            groups.setdefault((number, name.upper()), {}).setdefault(int(frame), (float(seconds), pose))
+    out = []
+    for (number, name), frames in sorted(groups.items()):
+        ordered = [frames[k] for k in sorted(frames)]
+        if len(ordered) < 2:
+            continue
+        times = [t for t, _ in ordered]
+        steps = sorted(b - a for a, b in zip(times, times[1:]) if b > a)
+        beat = steps[len(steps) // 2] if steps else .5
+        title = (titles or {}).get(f"{number}_{name}") or name.replace("_", " ")
+        entries = []
+        for i, (_, pose) in enumerate(ordered):
+            entry = {"file": pose["file"], "mirror": False}
+            if (pose.get("joints") or {}).get("version") != 2:
+                filled = between_skeleton(pose, ordered[i - 1][1] if i else ordered[-1][1],
+                                          ordered[(i + 1) % len(ordered)][1])
+                if filled:
+                    entry["joints"] = filled
+            entries.append(entry)
+        out.append({"id": f"board-{number}", "name": title, "kind": "storyboard", "loop": True,
+                    "poses": entries, "times": times, "bpm": max(60, min(200, round(60 / beat))), "score": 0})
+    return out

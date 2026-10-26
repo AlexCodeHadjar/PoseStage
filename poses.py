@@ -315,17 +315,19 @@ def bundled_joints() -> dict:
 
 
 def with_joints(pose: dict, user: dict) -> dict:
-    """Skeleton for the idle animation: the user's correction > bundled detection (top-level
-    files only, like support modes) > none (the frontend then estimates one from the box)."""
-    bundled = bundled_joints().get(pose["file"].casefold()) if "/" not in pose["file"] else None
+    """Skeleton for the idle animation: the user's correction > bundled detection (by the bare
+    file name, in any subfolder: tools/detect_joints.py --merge) > none (the frontend then
+    estimates one from the box)."""
+    name = pose["file"].rsplit("/", 1)[-1].casefold()
+    bundled = bundled_joints().get(name)
     if valid_joints(user.get(pose["file"]), pose["w"], pose["h"]):
         joints, source = clean_joints(user[pose["file"]]), "user"
         if user[pose["file"]].get("version") != 2 and bundled:
             # A version 1 correction had no legs: take the detected knees and feet.
             for key in ("knee_l", "knee_r", "foot_l", "foot_r"):
                 joints["points"][key] = dict(bundled["points"][key])
-    elif "/" not in pose["file"] and pose["file"].casefold() in bundled_joints():
-        joints, source = bundled_joints()[pose["file"].casefold()], "bundled"
+    elif bundled:
+        joints, source = bundled, "bundled"
     else:
         joints, source = None, None
     return {**pose, "joints": joints, "joints_source": source}

@@ -45,10 +45,11 @@ const posesWord = (n) => {
 };
 
 export function install(app) {
+  let boards = []; // storyboard dances, frame by frame: {id, name, loop, bpm, times, poses: [{file, mirror, pose}]}
   let found = []; // backend phrases: {id, name, loop, poses: [{file, mirror, pose}]}
   let own = []; // saved phrases: {id, name, loop, poses: [{file, mirror}]}
   let status = 'idle'; // idle | working | ready | error
-  let rows = []; // [{kind: "own"|"found", phrase}] in list order
+  let rows = []; // [{kind: "board"|"own"|"found", phrase}] in list order
   let selected = 0;
   let pollTimer = 0;
   let generation = 0; // bumped on a collection switch
@@ -175,6 +176,7 @@ export function install(app) {
     if (gen !== generation) return;
     status = result?.status || 'error';
     found = Array.isArray(result?.phrases) ? result.phrases : [];
+    boards = Array.isArray(result?.storyboards) ? result.storyboards : [];
     own = Array.isArray(sequences) ? sequences : [];
     render(result?.error);
     if (status === 'working' && isOpen()) pollTimer = setTimeout(refresh, POLL_MS);
@@ -182,15 +184,16 @@ export function install(app) {
 
   function row(kind, phrase, index) {
     const entries = kind === 'own' ? resolve(phrase.poses) : phrase.poses;
-    const item = el('div', `dance-row${kind === 'own' ? ' own' : ''}`);
+    const item = el('div', `dance-row ${kind}`);
     item.setAttribute('role', 'option');
     item.dataset.index = String(index);
     const info = el('div', 'dance-info');
     const missing = kind === 'own' ? phrase.poses.length - entries.length : 0;
-    info.append(
-      el('span', 'dance-name', phrase.name),
-      el('span', 'dance-meta', `${entries.length} ${posesWord(entries.length)}${phrase.loop ? ' · по кругу' : ' · туда и обратно'}${missing ? ` · нет файлов: ${missing}` : ''}`),
-    );
+    const length = phrase.times?.length ? Math.round(phrase.times[phrase.times.length - 1] + 60 / (phrase.bpm || 120)) : 0;
+    const meta = kind === 'board'
+      ? `${entries.length} кадров · ${length} с · свой темп ${phrase.bpm} BPM`
+      : `${entries.length} ${posesWord(entries.length)}${phrase.loop ? ' · по кругу' : ' · туда и обратно'}${missing ? ` · нет файлов: ${missing}` : ''}`;
+    info.append(el('span', 'dance-name', phrase.name), el('span', 'dance-meta', meta));
     const strip = el('div', 'dance-strip');
     for (const entry of entries) {
       const img = el('img', `dance-thumb${entry.mirror ? ' mirror' : ''}`);
@@ -203,6 +206,7 @@ export function install(app) {
       strip.append(img);
     }
     const edit = button('dance-btn subtle dance-edit', '✎', kind === 'own' ? 'Изменить (E)' : 'Сделать своей и изменить (E)');
+    if (kind === 'board') item.title = 'Готовый танец по раскадровке: кадры и темп из видео';
     edit.dataset.edit = '1';
     item.append(el('span', 'dance-play', '▶'), info, strip, edit);
     return item;
@@ -212,15 +216,20 @@ export function install(app) {
     statusLine.textContent = {
       working: 'Ищу связки… В первый раз около минуты: читаю одежду на всех рисунках.',
       error: `Не удалось найти связки${error ? `: ${error}` : ''}`,
-      ready: `${found.length} найдено${own.length ? ` · своих: ${own.length}` : ''}`,
+      ready: `${boards.length ? `готовых: ${boards.length} · ` : ''}${found.length} найдено${own.length ? ` · своих: ${own.length}` : ''}`,
       idle: '',
     }[status] || '';
     statusLine.classList.toggle('error', status === 'error');
-    rows = [...own.map((phrase) => ({ kind: 'own', phrase })), ...found.map((phrase) => ({ kind: 'found', phrase }))];
+    rows = [
+      ...boards.map((phrase) => ({ kind: 'board', phrase })),
+      ...own.map((phrase) => ({ kind: 'own', phrase })),
+      ...found.map((phrase) => ({ kind: 'found', phrase })),
+    ];
     const fragment = document.createDocumentFragment();
-    if (own.length) fragment.append(el('div', 'dance-section', 'Мои связки'));
+    const titles = { board: 'Готовые танцы', own: 'Мои связки', found: 'Найденные связки' };
+    const sections = new Set(rows.map((entry) => entry.kind)).size > 1;
     rows.forEach(({ kind, phrase }, index) => {
-      if (kind === 'found' && index === own.length && own.length) fragment.append(el('div', 'dance-section', 'Найденные'));
+      if (sections && rows[index - 1]?.kind !== kind) fragment.append(el('div', 'dance-section', titles[kind]));
       fragment.append(row(kind, phrase, index));
     });
     if (status === 'ready' && !rows.length) {
@@ -256,7 +265,8 @@ export function install(app) {
 
   async function playPhrase(phrase) {
     try {
-      await app.dance.play(phrase, prefs);
+      // A storyboard dance keeps the tempo of its video; the speed (×0,5 / ×0,25) still applies.
+      await app.dance.play(phrase, phrase.kind === 'storyboard' && phrase.bpm ? { ...prefs, bpm: phrase.bpm } : prefs);
     } catch (error) {
       report(error, 'Танец');
     }
@@ -524,6 +534,7 @@ export function install(app) {
   app.on('poses', () => {
     generation++;
     found = [];
+    boards = [];
     own = [];
     status = 'idle';
     if (editing) closeEditor();

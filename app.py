@@ -218,7 +218,7 @@ class Api:
         self._fullscreen = fullscreen
         self._on_top = False
         self._compact = False
-        self._dances = {"key": None, "status": "idle", "phrases": [], "error": None}
+        self._dances = {"key": None, "status": "idle", "phrases": [], "storyboards": [], "error": None}
         self._dance_lock = threading.Lock()
 
     # --- Poses and state ---
@@ -260,10 +260,12 @@ class Api:
     # --- Dances (docs/DANCE.md) ---
 
     def get_dances(self):
-        """Dance phrases of the active collection: {status: "ready"|"working"|"error", phrases, error}.
-        The search runs in the background (the first time every drawing's outfit is measured,
-        about a minute for 300 poses; later seconds) and is kept until the poses, their
-        skeletons or supports change. Call again while "working"."""
+        """Dances of the active collection: {status: "ready"|"working"|"error", phrases, storyboards,
+        error}. `storyboards` are the dances drawn frame by frame (dance.storyboards), ready at
+        once. `phrases` are found by matching the other poses; the search runs in the background
+        (the first time every drawing's outfit is measured, about a minute for 300 poses) and its
+        result is kept on disk until the poses, their skeletons or supports change. Call again
+        while "working"."""
         cid, items = self._catalog.snapshot()
         digest = hashlib.sha256(json.dumps(
             [cid] + [[p["file"], p.get("joints"), (p.get("support") or {}).get("mode")] for p in items],
@@ -271,10 +273,38 @@ class Api:
         with self._dance_lock:
             state = self._dances
             if state["key"] != digest:
-                state.update(key=digest, status="working", phrases=[], error=None)
-                threading.Thread(target=self._find_dances, args=(digest, items), daemon=True,
-                                 name="dances").start()
-            return {"status": state["status"], "phrases": state["phrases"], "error": state["error"]}
+                cached = poses.read_dict(DATA_DIR / "dances_cache.json")
+                state.update(key=digest, phrases=[], error=None,
+                             storyboards=self._with_poses(dance.storyboards(
+                                 items, dance.storyboard_titles(getattr(self._catalog, "folder", None))), items))
+                if cached.get("key") == digest and isinstance(cached.get("phrases"), list):
+                    state.update(status="ready", phrases=self._with_poses(cached["phrases"], items))
+                else:
+                    state["status"] = "working"
+                    threading.Thread(target=self._find_dances, args=(digest, items), daemon=True,
+                                     name="dances").start()
+            return {"status": state["status"], "phrases": state["phrases"],
+                    "storyboards": state.get("storyboards", []), "error": state["error"]}
+
+    @staticmethod
+    def _with_poses(phrases, items):
+        """Phrases with each entry's pose (mirrored for a mirrored entry; with the skeleton a
+        storyboard filled in); entries whose file is gone are dropped."""
+        by_file = {pose["file"]: pose for pose in items}
+        out = []
+        for phrase in phrases:
+            entries = []
+            for e in phrase.get("poses", []):
+                pose = by_file.get(e.get("file"))
+                if pose is None:
+                    continue
+                if e.get("joints"):
+                    pose = {**pose, "joints": e["joints"], "joints_source": "estimated"}
+                entries.append({"file": e["file"], "mirror": bool(e.get("mirror")),
+                                "pose": dance.mirror_pose(pose) if e.get("mirror") else pose})
+            if len(entries) >= 2:
+                out.append({**phrase, "poses": entries})
+        return out
 
     def get_sequences(self):
         """The user's own phrases of the active collection: [{id, name, loop, poses: [{file, mirror}]}]."""
@@ -294,12 +324,13 @@ class Api:
     def _find_dances(self, digest, items):
         try:
             styles = dance.load_styles(items, self._catalog.resolve)
-            by_file = {pose["file"]: pose for pose in items}
-            phrases = [dict(phrase, poses=[
-                {"file": e["file"], "mirror": e["mirror"],
-                 "pose": dance.mirror_pose(by_file[e["file"]]) if e["mirror"] else by_file[e["file"]]}
-                for e in phrase["poses"]]) for phrase in dance.find_phrases(items, styles=styles)]
-            result = {"status": "ready", "phrases": phrases, "error": None}
+            regular = [pose for pose in items if not dance.is_dance_drawing(pose["file"])]
+            found = dance.find_phrases(regular, styles=styles)
+            try:
+                poses.write_json(DATA_DIR / "dances_cache.json", {"key": digest, "phrases": found})
+            except OSError:
+                logging.exception("Cannot keep the found dance phrases")
+            result = {"status": "ready", "phrases": self._with_poses(found, items), "error": None}
         except Exception as error:  # noqa: BLE001 — reported to the UI, logged with the traceback
             logging.exception("Dance phrase search failed")
             result = {"status": "error", "phrases": [], "error": str(error)}
@@ -630,6 +661,14 @@ def create_app(*, hidden=False, fullscreen=True):
 
 
 def main():
+    if "--dance-worker" in sys.argv:  # background frames for desktop dances (dance_cache.py)
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+                            handlers=[logging.FileHandler(DATA_DIR / "dance_worker.log", encoding="utf-8")])
+        import dance_cache
+        index = sys.argv.index("--dance-worker")
+        parent = int(sys.argv[index + 1]) if len(sys.argv) > index + 1 and sys.argv[index + 1].isdigit() else 0
+        return dance_cache.run_worker(RESOURCE_DIR, parent)
     if "--desktop" in sys.argv:
         setup_logging()
         import desktop

@@ -124,17 +124,28 @@ export class Skin {
   }
 
   weights(x, y) {
-    const out = [];
+    // The three largest (weight, bone) pairs — as Python's sorted(…, reverse=True)[:3], ties by
+    // bone name — kept in place: no array per bone (thousands of vertices per drawing).
+    let w0 = -1, w1 = -1, w2 = -1;
+    let c0 = '', c1 = '', c2 = '';
+    const before = (w, c, wo, co) => w > wo || (w === wo && c > co);
     for (const [child, a, b] of this.bones) {
       const dx = b[0] - a[0];
       const dy = b[1] - a[1];
       const t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / (dx * dx + dy * dy || 1)));
-      out.push([1 / (Math.hypot(x - a[0] - t * dx, y - a[1] - t * dy) + this.soft) ** 4, child]);
+      const w = 1 / (Math.hypot(x - a[0] - t * dx, y - a[1] - t * dy) + this.soft) ** 4;
+      if (before(w, child, w0, c0)) {
+        w2 = w1; c2 = c1; w1 = w0; c1 = c0; w0 = w; c0 = child;
+      } else if (before(w, child, w1, c1)) {
+        w2 = w1; c2 = c1; w1 = w; c1 = child;
+      } else if (before(w, child, w2, c2)) {
+        w2 = w; c2 = child;
+      }
     }
-    out.sort((p, q) => q[0] - p[0] || (q[1] > p[1] ? 1 : q[1] < p[1] ? -1 : 0));
-    const top = out.slice(0, 3);
+    const top = [[w0, c0], [w1, c1], [w2, c2]].filter(([w]) => w >= 0);
     const total = top.reduce((sum, [w]) => sum + w, 0);
-    return top.map(([w, child]) => [w / total, child]);
+    for (const pair of top) pair[0] /= total;
+    return top;
   }
 }
 
@@ -198,15 +209,47 @@ export function createDanceRig(rest) {
     lockAt() {
       return 0;
     },
-    displace(x, y) {
-      const key = `${x},${y}`;
+    // Skin weights of these points ([x0, y0, x1, y1, …], the mesh's vertices) computed ahead,
+    // from point `from` on until performance.now() passes `deadline`; returns where it stopped
+    // (sources.length / 2 when all are done), so the work can be spread over frames.
+    prepare(sources, from = 0, deadline = Infinity) {
+      let i = from;
+      for (; i < sources.length / 2; i++) {
+        if ((i & 63) === 0 && performance.now() > deadline) break;
+        const key = sources[i * 2] * 65599 + sources[i * 2 + 1];
+        if (!cache.has(key)) cache.set(key, skin.weights(sources[i * 2], sources[i * 2 + 1]));
+      }
+      return i;
+    },
+    displace(x, y, t, lock, out = [0, 0]) {
+      const key = x * 65599 + y; // vertices sit at fixed points: a number key, no string per call
       let weights = cache.get(key);
       if (!weights) {
         weights = skin.weights(x, y);
         cache.set(key, weights);
       }
-      const [nx, ny] = forward(weights, moves, x, y);
-      return [nx - x, ny - y];
+      let nx = 0;
+      let ny = 0;
+      for (let k = 0; k < weights.length; k++) { // indexed: no iterator or array per vertex
+        const w = weights[k][0];
+        const move = moves[weights[k][1]];
+        if (!move) {
+          nx += w * x;
+          ny += w * y;
+          continue;
+        }
+        const c = move[0];
+        const s = move[1];
+        const r0 = move[2];
+        const p0 = move[3];
+        const dx = x - r0[0];
+        const dy = y - r0[1];
+        nx += w * (p0[0] + c * dx - s * dy);
+        ny += w * (p0[1] + s * dx + c * dy);
+      }
+      out[0] = nx - x;
+      out[1] = ny - y;
+      return out;
     },
   };
 }

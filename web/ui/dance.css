@@ -533,3 +533,8 @@ body.dancing nav .arrow {
     padding: 0 7px;
   }
 }
+
+/* Storyboard dances (frames and tempo from a video): a film mark before the name. */
+.dance-row.board .dance-name::before {
+  content: '🎬 ';
+}

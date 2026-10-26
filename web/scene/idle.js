@@ -141,12 +141,16 @@ export function createRig(pose) {
   const pins = supportContacts(pose).filter(([cx, cy]) => released.every(([rx, ry]) => Math.hypot(cx - rx, cy - ry) > pin * 1.5));
   for (const id of JOINT_IDS) if (points[id]?.support === true && points[id].xy) pins.push(xy(id));
 
+  // Rotation of (x, y) around (cx, cy), written into `turned`: displace() runs for thousands of
+  // vertices a frame and must not leave an array behind for each (garbage-collection pauses).
+  const turned = [0, 0];
   const rotate = (x, y, cx, cy, angle) => {
     const c = Math.cos(angle);
     const s = Math.sin(angle);
     const dx = x - cx;
     const dy = y - cy;
-    return [cx + c * dx - s * dy, cy + s * dx + c * dy];
+    turned[0] = cx + c * dx - s * dy;
+    turned[1] = cy + s * dx + c * dy;
   };
 
   return {
@@ -157,9 +161,14 @@ export function createRig(pose) {
       for (const [cx, cy] of pins) nearest = Math.min(nearest, Math.hypot(x - cx, y - cy));
       return 1 - smooth(pin * 0.5, pin * 1.6, nearest);
     },
-    // Displacement [dx, dy] (source px) of source point (x, y) at time t (seconds).
-    displace(x, y, t, lock = this.lockAt(x, y)) {
-      if (lock >= 1) return [0, 0];
+    // Displacement [dx, dy] (source px) of source point (x, y) at time t (seconds), written into
+    // `out` when given (the per-frame loops reuse one array instead of making thousands).
+    displace(x, y, t, lock = this.lockAt(x, y), out = [0, 0]) {
+      if (lock >= 1) {
+        out[0] = 0;
+        out[1] = 0;
+        return out;
+      }
       const w = (2 * Math.PI) / IDLE_LOOP;
       const breath = Math.sin(2 * w * t);
       const swing = Math.sin(w * t);
@@ -171,7 +180,9 @@ export function createRig(pose) {
       let ry;
       if (sway) {
         const weight = smooth(-0.12, 0.25, s);
-        [rx, ry] = rotate(nx, ny, pelvis[0], pelvis[1], sway * swing);
+        rotate(nx, ny, pelvis[0], pelvis[1], sway * swing);
+        rx = turned[0];
+        ry = turned[1];
         nx += (rx - nx) * weight;
         ny += (ry - ny) * weight;
       }
@@ -181,20 +192,28 @@ export function createRig(pose) {
       const distance = Math.hypot(x - head[0], y - head[1]);
       const headWeight = smooth(-0.05, 0.35, (s - neckAlong) / 0.5) * (1 - smooth(headRadius * 0.8, headRadius * 1.4, distance));
       if (headWeight > 0) {
-        [rx, ry] = rotate(nx, ny, neck[0], neck[1], HEAD * nod);
+        rotate(nx, ny, neck[0], neck[1], HEAD * nod);
+        rx = turned[0];
+        ry = turned[1];
         nx += (rx - nx) * headWeight;
         ny += (ry - ny) * headWeight;
       }
-      for (const [elbow, wrist] of hands) {
+      for (let k = 0; k < hands.length; k++) {
+        const elbow = hands[k][0];
+        const wrist = hands[k][1];
         const reach = Math.hypot(wrist[0] - elbow[0], wrist[1] - elbow[1]);
         const hand = 1 - smooth(reach * 0.5, reach * 1.1, Math.hypot(x - wrist[0], y - wrist[1]));
         if (hand <= 0) continue;
-        [rx, ry] = rotate(nx, ny, elbow[0], elbow[1], HAND * Math.sin(2 * w * t + elbow[0] * 0.01));
+        rotate(nx, ny, elbow[0], elbow[1], HAND * Math.sin(2 * w * t + elbow[0] * 0.01));
+        rx = turned[0];
+        ry = turned[1];
         nx += (rx - nx) * hand;
         ny += (ry - ny) * hand;
       }
       const free = 1 - lock;
-      return [(nx - x) * free, (ny - y) * free];
+      out[0] = (nx - x) * free;
+      out[1] = (ny - y) * free;
+      return out;
     },
   };
 }

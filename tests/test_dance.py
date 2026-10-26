@@ -19,6 +19,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageOps
 
 import app
 import dance
+import dance_cache
 import dance_motion
 import desktop
 import poses
@@ -561,60 +562,167 @@ class SequenceTests(unittest.TestCase):
 
 
 class DesktopDanceTests(unittest.TestCase):
+    """Desktop dances: frames made by workers into the disk cache (dance_cache), a player that
+    never waits (desktop.DancePlayback)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.old = poses.DATA_DIR
+        poses.DATA_DIR = self.root / "appdata"
+        self.stage = desktop.Stage(ROOT / "web" / "desktop", 300, "file")
+
+    def tearDown(self):
+        poses.DATA_DIR = self.old
+        self.tmp.cleanup()
+
     def entries(self, count=3):
         out = []
         for i in range(count):
             p = pose(f"p{i}.png", skeleton(math.pi / 2 - .4 * i))
-            out.append((p, drawing(p["joints"])))
+            path = self.root / p["file"]
+            drawing(p["joints"]).save(path)
+            out.append((path, p, False))
         return out
 
-    def test_frames_of_a_cycle(self):
-        stage = desktop.Stage(ROOT / "web" / "desktop", 300, "file")
-        frames = desktop.DanceFrames(stage, self.entries(), loop=False, style="soft", bpm=120, fps=10)
-        self.assertEqual(frames.order, [0, 1, 2, 1, 0])  # there and back
-        self.assertEqual(frames.count, 4 * 5)  # four counts of half a second at 10 fps
-        self.assertFalse(frames.done())
-        frames.render()
-        self.assertIsNone(frames.error)
-        self.assertTrue(frames.done())
-        self.assertEqual(frames.progress(), 1)
-        self.assertTrue(all(isinstance(f, desktop.Sprite) and isinstance(s, desktop.Sprite) for f, s in frames.frames))
-        # The end of counts 1 and 3 (0 → 1, 2 → 1): pose 1 holds still, drawn once.
-        self.assertIs(frames.frames[4], frames.frames[14])
-        self.assertIsNot(frames.frames[3], frames.frames[4])  # still moving
-        self.assertIs(frames.at(0), frames.frames[0])
-        self.assertIs(frames.at(frames.count / 10 + .05), frames.frames[0])  # the cycle repeats
-        left, top, right, bottom = frames.region
-        for figure, shadow in frames.frames:
-            for sprite in (figure, shadow):
-                self.assertGreaterEqual(sprite.x, left - 1)
-                self.assertLessEqual(min(stage.size[0], sprite.x + sprite.image.width), right)
+    def spec(self, count=3, loop=False, style="soft", bpm=120):
+        return dance_cache.spec_for(self.entries(count), loop, 300, "file", style, bpm, fps=10)
 
-    def test_groove_warps_every_frame_and_cancel_stops(self):
-        stage = desktop.Stage(ROOT / "web" / "desktop", 300, "file")
-        frames = desktop.DanceFrames(stage, self.entries(2), loop=True, style="groove", bpm=120, fps=8)
-        frames.render()
-        self.assertEqual(len({id(f) for f, _ in frames.frames}), frames.count)
-        cancelled = desktop.DanceFrames(stage, self.entries(2), loop=True, style="soft", bpm=120, fps=8)
-        cancelled.cancelled = True
-        cancelled.render()
-        self.assertEqual(cancelled.ready, 0)
+    def test_plan(self):
+        plan = dance_cache.Plan(3, False, "soft", 120, 10)
+        self.assertEqual(plan.order, [0, 1, 2, 1, 0])  # there and back
+        self.assertEqual(plan.count, 4 * 5)  # four counts of half a second at 10 fps
+        for bpm in (90, 100, 110, 120, 130, 140):
+            plan = dance_cache.Plan(4, True, "groove", bpm, 20)
+            covered = [i for step in range(plan.steps) for i in plan.frames_of(step)]
+            self.assertEqual(covered, list(range(plan.count)), bpm)
+            for step in range(plan.steps):
+                for i in plan.frames_of(step):
+                    self.assertEqual(plan.at(i)[0], step, (bpm, i))
 
-    def test_errors_are_kept_not_raised(self):
-        stage = desktop.Stage(ROOT / "web" / "desktop", 300, "file")
-        frames = desktop.DanceFrames(stage, self.entries(2), loop=True)
+    def test_keys_follow_what_changes_the_picture(self):
+        spec = self.spec()
+        self.assertEqual(dance_cache.key_of(spec), dance_cache.key_of(json.loads(json.dumps(spec))))
+        for change in ({"style": "groove"}, {"bpm": 130}, {"height": 400}, {"loop": True}):
+            self.assertNotEqual(dance_cache.key_of({**spec, **change}), dance_cache.key_of(spec), change)
+
+    def test_workers_make_every_frame_and_the_player_uses_them(self):
+        spec = self.spec()
+        key = dance_cache.submit(spec, 9)
+        self.assertEqual(dance_cache.pending_jobs(), [key])
+        self.assertEqual(dance_cache.submit(spec, 9), key)  # queued once
+        posed = [(p, Image.open(path).convert("RGBA")) for path, p, _ in self.entries()]
+        player = desktop.DancePlayback(self.stage, posed, False, "soft", 120, key, fps=10)
+        # Nothing made yet: a cross-fade of the two poses, never a wait.
+        self.assertEqual(len(player.parts(2)), 2)  # mid-move: both poses
+        self.assertEqual(len(player.parts(0)), 1)
+        self.assertEqual(player.from_disk, 0)
+        painters = {}
+        while dance_cache.work_once(ROOT, painters):
+            pass
+        self.assertTrue(dance_cache.complete(key))
+        self.assertEqual(dance_cache.pending_jobs(), [])
+        for i in range(player.count):
+            parts = player.parts(i)
+            self.assertEqual((len(parts), parts[0][2]), (1, 1), i)
+        self.assertEqual(player.from_disk, player.count)
+        (figure, fx, fy), (shadow, sx, sy) = dance_cache.load_frame(key, 3)
+        self.assertEqual(figure.mode, "RGBA")
+        self.assertGreater(figure.getchannel("A").getextrema()[1], 0)
+        self.assertGreater(shadow.getchannel("A").getextrema()[1], 0)
+        self.assertIsNone(dance_cache.load_frame(key, player.count + 5))
+        self.assertEqual(dance_cache.submit(spec, 0), key)  # made already: nothing queued
+        self.assertEqual(dance_cache.pending_jobs(), [])
+
+    def test_claims_split_the_work_and_stale_claims_are_taken_over(self):
+        key = dance_cache.submit(self.spec(count=3, loop=True), 0)
+        folder = dance_cache.cache_root() / key
+        self.assertTrue(dance_cache._claim(folder, 0))
+        self.assertFalse(dance_cache._claim(folder, 0))  # another worker has it
+        old = time.time() - dance_cache.CLAIM_STALE_S - 5
+        os.utime(folder / "c0", (old, old))
+        self.assertTrue(dance_cache._claim(folder, 0))  # its worker died
+
+    def test_cancelled_and_failing_jobs(self):
+        key = dance_cache.submit(self.spec(), 0)
+        dance_cache.cancel([key])
+        self.assertEqual(dance_cache.pending_jobs(), [])
+        self.assertFalse(dance_cache.work_once(ROOT, {}))
+        key = dance_cache.submit(self.spec(), 5)
         with mock.patch.object(dance_motion, "Transition", side_effect=RuntimeError("boom")), mock.patch("logging.exception"):
-            frames.render()
-        self.assertEqual(str(frames.error), "boom")
-        self.assertTrue(frames.cancelled)
+            self.assertTrue(dance_cache.work_once(ROOT, {}))
+        self.assertEqual(dance_cache.pending_jobs(), [])  # dropped, not retried forever
+        self.assertFalse(dance_cache.complete(key))
 
-    def test_progress_frame_draws_a_bar(self):
-        stage = desktop.Stage(ROOT / "web" / "desktop", 300, "file")
-        p, image = self.entries(1)[0]
-        prepared = stage.prepare(p, image)
-        empty, half = desktop.progress_frame(stage, prepared, 0), desktop.progress_frame(stage, prepared, .5)
-        self.assertEqual(empty.size, stage.size)
-        self.assertIsNotNone(ImageChops.difference(empty, half).getbbox())
+    def test_urgent_jobs_first(self):
+        slow = dance_cache.submit(self.spec(count=2), 0)
+        urgent = dance_cache.submit(self.spec(count=3), 9)
+        self.assertEqual(dance_cache.pending_jobs()[0], urgent)
+        dance_cache.work_once(ROOT, {})
+        self.assertTrue((dance_cache.cache_root() / urgent / "d0").exists())
+        self.assertFalse((dance_cache.cache_root() / slow / "d0").exists())
+
+    def test_prune_drops_the_least_recently_used(self):
+        keys = []
+        for count in (2, 3):
+            key = dance_cache.submit(self.spec(count=count), 0)
+            while dance_cache.work_once(ROOT, {}):
+                pass
+            keys.append(key)
+        old = time.time() - 1000
+        os.utime(dance_cache.cache_root() / keys[0], (old, old))
+        dance_cache.prune(max_bytes=1)
+        self.assertFalse((dance_cache.cache_root() / keys[0]).exists())
+        self.assertFalse((dance_cache.cache_root() / keys[1]).exists())
+        key = dance_cache.submit(self.spec(count=2), 0)
+        dance_cache.prune(max_bytes=1, keep={key})
+        self.assertTrue((dance_cache.cache_root() / key).exists())
+
+
+class StoryboardTests(unittest.TestCase):
+    def frame(self, number, name, index, seconds, joints=True, folder="d/poses"):
+        file = f"{folder}/dance_{number}_{name}__{index:03d}__{seconds:06.3f}s__pose-01.png"
+        return dict(pose(file, skeleton(math.pi / 2 - .1 * index) if joints else None), joints=skeleton(math.pi / 2 - .1 * index) if joints else None)
+
+    def test_dances_in_order_with_their_tempo(self):
+        items = [self.frame("02", "BTS_DANCE", i, .5 * (i - 1)) for i in (3, 1, 2, 4)]
+        items += [self.frame("01", "JISOO_FLOWER", i, .5 * (i - 1)) for i in (1, 2, 3)]
+        items += [dict(pose("d/poses/dance_01_JISOO_FLOWER__preview__pose-01.png"))]  # a sheet copy
+        items += [self.frame("01", "JISOO_FLOWER", 2, .5, folder="copy")]  # the same frame elsewhere
+        items += [pose("photo-000001__pose-01.png")]
+        boards = dance.storyboards(items, {"01_JISOO_FLOWER": "JISOO — FLOWER"})
+        self.assertEqual([b["name"] for b in boards], ["JISOO — FLOWER", "BTS DANCE"])
+        self.assertEqual([e["file"].split("__")[1] for e in boards[1]["poses"]], ["001", "002", "003", "004"])
+        self.assertEqual(len(boards[0]["poses"]), 3)
+        self.assertEqual((boards[1]["bpm"], boards[1]["loop"], boards[1]["kind"]), (120, True, "storyboard"))
+        self.assertEqual(boards[1]["times"], [0, .5, 1, 1.5])
+
+    def test_a_missed_skeleton_is_filled_between_its_neighbours(self):
+        items = [self.frame("03", "CUPID", i, .5 * (i - 1), joints=i != 2) for i in (1, 2, 3)]
+        board = dance.storyboards(items)[0]
+        self.assertNotIn("joints", board["poses"][0])
+        filled = board["poses"][1]["joints"]
+        self.assertTrue(poses.valid_joints(filled))
+        before, after = items[0]["joints"]["points"]["wrist_l"]["xy"], items[2]["joints"]["points"]["wrist_l"]["xy"]
+        self.assertAlmostEqual(filled["points"]["wrist_l"]["xy"][0], (before[0] + after[0]) / 2, delta=1)
+        self.assertTrue(dance.is_dance_drawing("x/dance_01_JISOO_FLOWER__preview__pose-01.png"))
+        self.assertFalse(dance.is_dance_drawing("photo-000001__pose-01.png"))
+
+    def test_titles_from_the_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "Shots_dance"
+            folder.mkdir()
+            (folder / "manifest.json").write_text(json.dumps([{"folder": "04_TWICE_TT", "title": "TWICE — TT"}]),
+                                                  encoding="utf-8-sig")
+            (Path(tmp) / "broken").mkdir()
+            (Path(tmp) / "broken" / "manifest.json").write_text("{", encoding="utf-8")
+            self.assertEqual(dance.storyboard_titles(Path(tmp)), {"04_TWICE_TT": "TWICE — TT"})
+        self.assertEqual(dance.storyboard_titles(None), {})
+
+    def test_bundled_skeletons_are_found_in_subfolders(self):
+        name = next(iter(poses.bundled_joints()))
+        item = {"file": f"some/folder/{name}", "w": 1024, "h": 1024, "box": [0, 0, 1024, 1024]}
+        self.assertEqual(poses.with_joints(item, {})["joints_source"], "bundled")
 
 
 if __name__ == "__main__":

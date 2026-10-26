@@ -474,101 +474,50 @@ def display_joints(prepared):
             for key, point in joints["points"].items() if point.get("xy") and point.get("state") != "absent"}
 
 
-class DanceFrames:
-    """Every frame of one cycle of a dance phrase on a Stage, made once in a background thread
-    (a bone-driven frame costs ~0.1 s on the CPU; playback then only composites). Frame i shows
-    dance time i / fps as (figure Sprite, shadow Sprite)."""
+class DancePlayback:
+    """A phrase on the podium that never waits: each frame comes from the disk cache as soon as a
+    worker process has made it (dance_cache.py), else it is a cross-fade of the two poses, so a
+    dance starts the moment it is chosen and turns bone-driven as its frames arrive."""
 
-    def __init__(self, stage, entries, loop, style="soft", bpm=120, fps=DANCE_FPS):
-        import dance_motion
-        self.motion = dance_motion
-        self.stage, self.style, self.fps = stage, style if style in dance_motion.STYLES else "soft", fps
-        self.beat = 60 / bpm
+    LOADED = 24  # decoded frames kept in memory
+
+    def __init__(self, stage, entries, loop, style="soft", bpm=120, key=None, fps=DANCE_FPS):
+        import dance_cache
+        self.cache, self.stage, self.key = dance_cache, stage, key
+        self.plan = dance_cache.Plan(len(entries), loop, style, bpm, fps)
+        self.count, self.fps = self.plan.count, fps
         self.prepared = [stage.prepare(pose, image) for pose, image in entries]
-        self.order = dance_motion.cycle(len(self.prepared), loop)
-        self.count = max(1, round((len(self.order) - 1) * self.beat * fps))
-        self.frames = [None] * self.count
-        self.ready = 0  # frames made, in order
-        self.cancelled = False
-        self.error = None
-        self.region = None  # union of every frame's sprites (the part of the window that changes)
+        self.still = {}  # pose index → (figure, shadow)
+        self.loaded = {}  # frame index → (figure, shadow)
+        self.from_disk = 0  # frames shown from the cache (diagnostics)
 
-    def progress(self) -> float:
-        return self.ready / self.count
+    def pose(self, index):
+        if index not in self.still:
+            p = self.prepared[index]
+            figure = Sprite(p["figure"], p["left"], p["top"])
+            self.still[index] = (figure, self.stage.cast_shadow(figure))
+        return self.still[index]
 
-    def done(self) -> bool:
-        return self.region is not None  # set after the last frame
-
-    def canvas(self, prepared):
-        canvas = Image.new("RGBA", self.stage.size, (0, 0, 0, 0))
-        canvas.alpha_composite(prepared["figure"], (prepared["left"], prepared["top"]))
-        return canvas
-
-    def sprite(self, layer):
-        box = layer.getbbox()
-        if box is None:
-            return Sprite(Image.new("RGBA", (1, 1), (0, 0, 0, 0)), 0, 0)
-        return Sprite(layer.crop(box), box[0], box[1])
-
-    def render(self):
-        """Runs in a thread; stops early when `cancelled` is set."""
-        try:
-            motion = self.motion
-            share, curve_name = motion.STYLES[self.style]
-            ease = motion.curve(curve_name)
-            canvases = [self.canvas(p) for p in self.prepared]
-            joints = [display_joints(p) for p in self.prepared]
-            still = {}  # pose index → (figure, shadow) while it holds (soft style)
-            move = self.beat * share
-            step_frames = self.beat * self.fps
-            for step, (a, b) in enumerate(zip(self.order, self.order[1:])):
-                transition = motion.Transition(canvases[a], joints[a], canvases[b], joints[b], grid=DANCE_GRID)
-                first, last = round(step * step_frames), round((step + 1) * step_frames)
-                for i in range(first, min(last, self.count)):
-                    if self.cancelled:
-                        return
-                    t = i / self.fps - step * self.beat
-                    u = t / move
-                    if u >= 1 and self.style == "soft":
-                        if b not in still:
-                            figure = Sprite(self.prepared[b]["figure"], self.prepared[b]["left"], self.prepared[b]["top"])
-                            still[b] = (figure, self.stage.cast_shadow(figure))
-                        self.frames[i] = still[b]
-                    else:
-                        target = transition.skeleton(u, ease)
-                        if self.style == "groove":
-                            target = motion.groove(target, i / self.fps, self.beat, transition.height)
-                        figure = self.sprite(transition.layer(target, u, ease))
-                        self.frames[i] = (figure, self.stage.cast_shadow(figure))
-                    self.ready = i + 1
-            sprites = [sprite for pair in self.frames for sprite in pair]
-            width, height = self.stage.size
-            self.region = (max(0, min(s.x for s in sprites)), max(0, min(s.y for s in sprites)),
-                           min(width, max(s.x + s.image.width for s in sprites)),
-                           min(height, max(s.y + s.image.height for s in sprites)))
-        except Exception as error:  # noqa: BLE001 — shown as "not available", logged with the traceback
-            logging.exception("Dance frames failed")
-            self.error = error
-            self.cancelled = True
-
-    def at(self, seconds: float):
-        """(figure, shadow) at dance time `seconds` (the cycle repeats)."""
-        return self.frames[int(seconds * self.fps) % self.count]
-
-
-def progress_frame(stage, prepared, progress: float) -> Image.Image:
-    """The first pose on the podium with a thin bar under it while the dance is being made."""
-    figure = Sprite(prepared["figure"], prepared["left"], prepared["top"])
-    frame = stage.frame([(figure, stage.cast_shadow(figure), 1)])
-    width, height = stage.size
-    bar_w, bar_h = round(width * .34), max(3, round(height * .007))
-    x, y = (width - bar_w) // 2, round(height * .955)
-    draw = ImageDraw.Draw(frame)
-    draw.rounded_rectangle((x, y, x + bar_w, y + bar_h), radius=bar_h, fill=(40, 42, 46, 150))
-    if progress > 0:
-        draw.rounded_rectangle((x, y, x + max(bar_h, round(bar_w * progress)), y + bar_h), radius=bar_h,
-                               fill=(235, 238, 242, 230))
-    return frame
+    def parts(self, i):
+        """[(figure, shadow, opacity)] of frame i, for Stage.frame."""
+        i %= self.count
+        frame = self.loaded.get(i)
+        if frame is None and self.key:
+            made = self.cache.load_frame(self.key, i)
+            if made:
+                frame = self.loaded[i] = (Sprite(*made[0]), Sprite(*made[1]))
+                while len(self.loaded) > self.LOADED:
+                    self.loaded.pop(next(iter(self.loaded)))
+        if frame:
+            self.from_disk += 1
+            return [(*frame, 1)]
+        _, a, b, u = self.plan.at(i)
+        if u >= 1:
+            return [(*self.pose(b), 1)]
+        mix = smooth(.2, .8, min(1.0, max(0.0, self.plan.ease(u))))  # as dance_motion.Transition.layer
+        if mix <= 0:
+            return [(*self.pose(a), 1)]
+        return [(*self.pose(a), 1 - mix), (*self.pose(b), mix)]
 
 
 # --- Settings -----------------------------------------------------------------------------------
@@ -589,13 +538,15 @@ def save_settings(settings: dict):
         logging.exception("Cannot save desktop settings")
 
 
-def launch(command_args):
-    """Starts another PoseStage process (the window mode) detached from this one."""
+def launch(command_args, background=False):
+    """Starts another PoseStage process detached from this one (the window mode, or with
+    `background` a dance-frame worker at below-normal priority without a console)."""
     import os
     frozen = getattr(sys, "frozen", False)
     command = [sys.executable, *([] if frozen else [str(Path(__file__).with_name("app.py"))]), *command_args]
     environment = {**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"}
-    subprocess.Popen(command, env=environment, close_fds=True)
+    flags = 0x4000 | 0x08000000 if background else 0  # BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW
+    return subprocess.Popen(command, env=environment, close_fds=True, creationflags=flags)
 
 
 # --- Win32 window -------------------------------------------------------------------------------
@@ -704,6 +655,7 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
     dance_prefs = {"style": "soft", "bpm": 120, "speed": 1, **poses.clean_dance_prefs(prefs.get("dance"))}
     by_file = {pose["file"]: i for i, pose in enumerate(items)}
     api.get_dances()  # starts the phrase search in the background (seconds once outfits are cached)
+    workers, queued = [], set()  # dance-frame worker processes; keys queued for the background
     cache: dict[str, Image.Image] = {}
     lock = threading.Lock()
 
@@ -834,16 +786,21 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
             return
         prepared = stage.prepare(items[index], load_image(index))
         figure, shadow = stage.sprites(prepared)
-        # Cross-fade from what is on screen: the animated frame while the pose is alive.
+        # Cross-fade from what is on screen (the animated frame while the pose is alive) to
+        # the new pose as the idle animation will show it next: no jump when it takes over.
         previous = view.get("live") or view["layers"]
-        view["live"] = None
+        target = (figure, shadow)
+        if view["idle"] and view.get("idle_start") is not None:
+            alive = stage.animate(prepared, time.perf_counter() + TRANSITION_S - view["idle_start"])
+            target = (alive, stage.cast_shadow(alive))
+        view["live"] = target if target[0] is not figure else None
         view["index"], view["layers"], view["prepared"] = index, (figure, shadow), prepared
-        view["region"], view["idle_shadow"] = bounds(figure, shadow), None
+        view["region"], view["idle_shadow"] = bounds(*target), target[1] if view["live"] else None
         if animate and previous:
-            view["anim"] = (time.perf_counter(), previous, (figure, shadow))
+            view["anim"] = (time.perf_counter(), previous, target)
             user32.SetTimer(view["hwnd"], 1, 15, None)
         else:
-            present(stage.frame([(figure, shadow, 1)]))
+            present(stage.frame([(*target, 1)]))
         api.save_state(index, items[index]["file"])
         preload(index)
 
@@ -924,7 +881,8 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
         dancing = view["dance"]
         show(view["index"], animate=False)
         if dancing:  # the frames were made for the old size: make them again
-            start_dance(dancing["name"], dancing["entries"], dancing["loop"])
+            start_dance(dancing["name"], dancing["entries"], dancing["loop"], dancing["bpm"])
+        prepare_dances()
         remember_position()
 
     def set_on_top(on):
@@ -995,16 +953,22 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
 
     # --- Dances: phrases from the PoseStage window's search and the user's own --------------------
     def dance_phrases():
-        """(status, [(name, [(file, mirror)], loop)]): own phrases first, then the found ones."""
-        out = []
-        for sequence in api.get_sequences():
-            entries = [(e["file"], e["mirror"]) for e in sequence["poses"] if e["file"] in by_file]
-            if len(entries) >= 2:
-                out.append(("★ " + sequence["name"], entries, sequence["loop"]))
+        """(status, [(name, [(file, mirror, joints | None)], loop, bpm | None)]): the storyboard
+        dances first (their own tempo; `joints` where a frame's skeleton was filled in), then the
+        user's own phrases, then the found ones."""
         found = api.get_dances()
+        out = []
+        for board in found.get("storyboards", []):
+            entries = [(e["file"], e["mirror"], e["pose"].get("joints") if e["pose"].get("joints_source") == "estimated"
+                        else None) for e in board["poses"]]
+            out.append((board["name"], entries, board["loop"], board.get("bpm")))
+        for sequence in api.get_sequences():
+            entries = [(e["file"], e["mirror"], None) for e in sequence["poses"] if e["file"] in by_file]
+            if len(entries) >= 2:
+                out.append(("★ " + sequence["name"], entries, sequence["loop"], None))
         for phrase in found["phrases"]:
-            out.append((phrase["name"], [(e["file"], e["mirror"]) for e in phrase["poses"]], phrase["loop"]))
-        return found["status"], out[:40]
+            out.append((phrase["name"], [(e["file"], e["mirror"], None) for e in phrase["poses"]], phrase["loop"], None))
+        return found["status"], out[:46]
 
     def dance_menu(handle):
         """Adds the «Танцы» submenu; returns the phrases in menu order."""
@@ -1016,9 +980,15 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
             add(0, 40, "Остановить танец\tEsc")
             add(0, 41, ("Продолжить" if dancing["paused"] else "Пауза") + "\tПробел")
             add(0x800, 0, None)
-        for i, (name, entries, loop) in enumerate(phrases):
+        for i, (name, entries, loop, bpm) in enumerate(phrases):
             playing = dancing and dancing["name"] == name
-            add(0x8 if playing else 0, DANCE_PHRASE_ID + i, f"{name} — {len(entries)}{' ↻' if loop else ''}")
+            if bpm:  # a storyboard dance: frames and tempo from its video
+                label = f"{name} — {len(entries)} кадров, {bpm} BPM"
+            else:
+                label = f"{name} — {len(entries)}{' ↻' if loop else ''}"
+            if i and bpm is None and phrases[i - 1][3]:
+                add(0x800, 0, None)  # after the storyboard dances
+            add(0x8 if playing else 0, DANCE_PHRASE_ID + i, label)
         if status == "working":
             add(0x1, 0, "Ищу связки…")
         elif status == "error":
@@ -1037,39 +1007,99 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
         user32.AppendMenuW(handle, 0x10, sub, "Танцы")  # MF_POPUP
         return phrases
 
-    def start_dance(name, entries, loop):
-        """Makes the phrase's frames in the background (a bar under the podium shows how far),
-        then plays them in a loop."""
+    def dance_pose(index, joints):
+        return {**items[index], "joints": joints} if joints else items[index]
+
+    def dance_spec(entries, loop, bpm=None):
+        """dance_cache spec of a phrase at the current size and dance settings (None if a file is gone)."""
+        import dance_cache
+        resolved = []
+        for file, mirror, joints in entries:
+            index, path = by_file.get(file), catalog.resolve(file)
+            if index is None or not path:
+                return None
+            resolved.append((path, dance_pose(index, joints), mirror))
+        return dance_cache.spec_for(resolved, loop, view["stage"].size[1], view["sizing"],
+                                    dance_prefs["style"], bpm or dance_prefs["bpm"])
+
+    def ensure_workers():
+        """Up to two worker processes (one on a small CPU) make queued frames in the background."""
+        import os
+        workers[:] = [w for w in workers if w.poll() is None]
+        wanted = 2 if (os.cpu_count() or 2) >= 4 else 1
+        while len(workers) < wanted:
+            try:
+                workers.append(launch(["--dance-worker", str(os.getpid())], background=True))
+            except OSError:
+                logging.exception("Cannot start a dance-frame worker")
+                return
+
+    def prepare_dances():
+        """Queues every phrase at the current size and settings in the background (once each),
+        so choosing one later plays its finished frames at once."""
+        import dance_cache
+        status, phrases = dance_phrases()
+        if status == "working":
+            user32.SetTimer(view["hwnd"], 4, 3000, None)  # again when the search is done
+            return
+        user32.KillTimer(view["hwnd"], 4)
+        keys = set()
+        for _, entries, loop, bpm in phrases:
+            spec = dance_spec(entries, loop, bpm)
+            if spec:
+                try:
+                    keys.add(dance_cache.submit(spec, 0))
+                except OSError:
+                    logging.exception("Cannot queue dance frames")
+        current = {view["dance"]["key"]} if view["dance"] else set()
+        dance_cache.cancel(queued - keys - current)  # made for other settings: not needed now
+        queued.clear()
+        queued.update(keys)
+        if any(not dance_cache.complete(key) for key in keys):
+            ensure_workers()
+
+    def start_dance(name, entries, loop, bpm=None):
+        """Plays the phrase at once: finished frames from the cache, the rest as cross-fades while
+        the workers make them (this phrase first)."""
+        import dance_cache
         stop_dance(redraw=False)
         user32.KillTimer(view["hwnd"], 1)  # a pose crossfade would draw over the dance
         if view["anim"]:
             view["anim"], view["pending"] = None, 0
         stage = view["stage"]
         posed = []
-        for file, mirror in entries:
+        for file, mirror, joints in entries:
             index = by_file.get(file)
             if index is None:
                 continue
-            pose, image = items[index], load_image(index)
+            pose, image = dance_pose(index, joints), load_image(index)
             if mirror:
                 import dance
                 pose, image = dance.mirror_pose(pose), ImageOps.mirror(image)
             posed.append((pose, image))
         if len(posed) < 2:
             return
-        frames = DanceFrames(stage, posed, loop, dance_prefs["style"], dance_prefs["bpm"])
-        threading.Thread(target=frames.render, daemon=True, name="dance-frames").start()
-        view["dance"] = {"name": name, "entries": entries, "loop": loop, "frames": frames, "clock": 0.0,
-                         "last": None, "paused": False, "shown": -1, "progress_at": 0.0}
+        key = None
+        spec = dance_spec(entries, loop, bpm)
+        if spec:
+            try:
+                key = dance_cache.submit(spec, 9)
+                if not dance_cache.complete(key):
+                    ensure_workers()
+            except OSError:
+                logging.exception("Cannot queue dance frames")
+        playback = DancePlayback(stage, posed, loop, dance_prefs["style"], bpm or dance_prefs["bpm"], key)
+        view["dance"] = {"name": name, "entries": entries, "loop": loop, "bpm": bpm, "playback": playback, "key": key,
+                         "clock": 0.0, "last": None, "paused": False, "shown": -1}
         user32.SetTimer(view["hwnd"], 3, 1000 // DANCE_FPS, None)
         dance_tick()
-        logging.info("Desktop dance: %s, %d poses", name, len(posed))
+        logging.info("Desktop dance: %s, %d poses, frames %s", name, len(posed),
+                     "ready" if key and dance_cache.complete(key) else "being made")
 
     def stop_dance(redraw=True):
         dancing, view["dance"] = view["dance"], None
         if not dancing:
             return
-        dancing["frames"].cancelled = True
         user32.KillTimer(view["hwnd"], 3)
         if redraw and view["layers"]:
             present(view["stage"].frame([(*view["layers"], 1)]))
@@ -1085,40 +1115,25 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
         dance_prefs[key] = value
         poses.save_view_prefs({"dance": {key: value}})  # shared with the PoseStage window
         dancing = view["dance"]
-        if dancing and key in ("style", "bpm"):  # other frames: make them again
-            start_dance(dancing["name"], dancing["entries"], dancing["loop"])
+        if key in ("style", "bpm"):  # other frames
+            if dancing:
+                start_dance(dancing["name"], dancing["entries"], dancing["loop"], dancing["bpm"])
+            prepare_dances()
 
     def dance_tick():
         dancing = view["dance"]
         if not dancing or view.get("locked") or not dib.get("memory"):
             return
-        frames, stage, now = dancing["frames"], view["stage"], time.perf_counter()
-        if frames.error is not None:
-            stop_dance()
-            return
-        if not frames.done():
-            if now - dancing["progress_at"] >= .25:  # the bar: a few updates a second are enough
-                dancing["progress_at"] = now
-                present(progress_frame(stage, frames.prepared[0], frames.progress()))
-            return
-        if dancing["last"] is None:  # first frame after making them: redraw all, then patches
-            dancing["last"] = now
-            figure, shadow = frames.at(0)
-            present(stage.frame([(figure, shadow, 1)]))
-            return
-        if not dancing["paused"]:
+        now = time.perf_counter()
+        if dancing["last"] is not None and not dancing["paused"]:
             dancing["clock"] += (now - dancing["last"]) * dance_prefs["speed"]
         dancing["last"] = now
-        index = int(dancing["clock"] * frames.fps) % frames.count
+        playback = dancing["playback"]
+        index = int(dancing["clock"] * playback.fps) % playback.count
         if index == dancing["shown"]:
             return
         dancing["shown"] = index
-        figure, shadow = frames.frames[index]
-        left, top, right, bottom = frames.region
-        patch = stage.podium.crop((left, top, right, bottom))
-        place(patch, shadow.image, shadow.x - left, shadow.y - top)
-        place(patch, figure.image, figure.x - left, figure.y - top)
-        present_patch(patch, left, top)
+        present(view["stage"].frame(playback.parts(index)))
 
     def open_window():
         try:
@@ -1166,6 +1181,8 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
                     idle_tick()
                 elif wparam == 3:
                     dance_tick()
+                elif wparam == 4:
+                    prepare_dances()
                 return 0
             if message == WM_EXITSIZEMOVE:
                 remember_position()
@@ -1232,6 +1249,7 @@ def run(resource_dir: Path, executable_dir: Path | None) -> int:
         logging.warning("Session notifications unavailable: the animation keeps running while locked")
     if view["idle"]:
         set_idle(True)
+    user32.SetTimer(hwnd, 4, 4000, None)  # then queue every phrase's frames in the background
     logging.info("Desktop mode: %d poses, %d in rotation, size %s", len(items), len(cycle), settings["size"])
 
     message = wt.MSG()

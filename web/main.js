@@ -215,6 +215,7 @@ function resize() {
   current?.fit(camera);
   transition?.next.fit(camera);
   for (const figure of dance?.figures || []) figure.fit(camera);
+  for (const figure of spares.values()) figure.placement = null; // refit when used
   renderer.shadowMap.needsUpdate = true;
   chrome.updateWindowed();
   invalidate();
@@ -309,7 +310,8 @@ async function begin(target, direction) {
     return;
   }
 
-  const next = new Figure(poses[target], texture, studio.scene, overlay);
+  clearTimeout(spareTimer);
+  const next = figureFor(target, texture);
   next.fit(camera);
   next.face(camera);
   next.uniforms.uReveal.value = 0;
@@ -351,6 +353,7 @@ function finish() {
   renderer.shadowMap.needsUpdate = true;
   saveState();
   invalidate();
+  scheduleSpares();
   events.emit('transition', { phase: 'end', index });
   events.emit('pose', { index, pose: poses[index] });
   // pause() clears the queue before finishing, so blurring the window still drops
@@ -381,6 +384,8 @@ async function reload(list, startIndex) {
   const gen = ++generation;
   stopDance();
   abortNavigation();
+  clearTimeout(spareTimer);
+  disposeSpares();
   current?.dispose();
   current = null;
   cache?.dispose();
@@ -416,6 +421,8 @@ async function reload(list, startIndex) {
       current.face(camera);
       renderer.shadowMap.needsUpdate = true;
       cache.preload(index, order);
+      scheduleSpares(800);
+      setTimeout(warmDanceShader, 1500);
       if (firstPoseMs === null) {
         firstPoseMs = performance.now() - started;
       }
@@ -446,6 +453,11 @@ function updatePose(i, pose) {
   }
   const previous = poses[i];
   poses[i] = pose; // TextureCache shares this array
+  if (spares.has(i)) {
+    spares.get(i).dispose();
+    spares.delete(i);
+    scheduleSpares();
+  }
   if (previous.url !== pose.url && cache) {
     cache.failed.delete(i);
     if (!cache.pins.has(i)) {
@@ -544,6 +556,7 @@ function setOrder(indices) {
   order = normalizeOrder(indices, poses.length);
   if (cache && current && !transition && !loading) {
     cache.preload(index, order);
+    scheduleSpares();
   }
 }
 
@@ -552,6 +565,64 @@ function goEdge(edge) {
   if (target >= 0) {
     requestGoTo(target);
   }
+}
+
+// --- Spare figures: the poses next to the current one, ready before they are needed ---------
+// The first frame that draws a Figure on screen costs tens of ms (the GPU driver prepares its
+// texture and state on first use; the idle rig is built) — a jerk when it is the first frame of
+// a transition. Spares are made in a quiet moment after a transition and drawn on screen every
+// frame fully dissolved (uReveal 0: every fragment discarded, invisible), so the next transition
+// starts with a figure the GPU already knows.
+const spares = new Map(); // pose index -> invisible, already drawn Figure
+let spareTimer = 0;
+
+function disposeSpares(keep = null) {
+  for (const [i, figure] of spares) {
+    if (keep?.has(i)) continue;
+    figure.dispose();
+    spares.delete(i);
+  }
+}
+
+function scheduleSpares(delay = 350) {
+  clearTimeout(spareTimer);
+  spareTimer = setTimeout(() => prepareSpares().catch(report), delay);
+}
+
+async function prepareSpares() {
+  if (!cache || !current || !poses.length) return;
+  const gen = generation;
+  const wanted = new Set([1, -1].map((delta) => stepTarget(index, delta, poses.length, order)).filter((i) => i !== index));
+  disposeSpares(wanted);
+  for (const i of wanted) {
+    if (spares.has(i)) continue;
+    if (transition || loading || dance) return scheduleSpares(); // later, when nothing moves
+    let texture;
+    try {
+      texture = await cache.get(i);
+    } catch {
+      continue;
+    }
+    if (gen !== generation || transition || loading || dance || spares.has(i) || !current) return scheduleSpares();
+    const figure = new Figure(poses[i], texture, studio.scene, overlay);
+    figure.fit(camera);
+    if (idleOn) figure.animate(camera, performance.now() / 1000);
+    figure.uniforms.uReveal.value = 0;
+    spares.set(i, figure);
+    invalidate();
+    await new Promise((resolve) => setTimeout(resolve, 150)); // one per quiet moment
+  }
+}
+
+// The spare figure for `target` drawn with `texture`, or a new one.
+function figureFor(target, texture) {
+  const spare = spares.get(target);
+  spares.delete(target);
+  if (spare && spare.pose === poses[target] && spare.texture === texture) {
+    return spare;
+  }
+  spare?.dispose();
+  return new Figure(poses[target], texture, studio.scene, overlay);
 }
 
 // --- Render loop ---------------------------------------------------------
@@ -580,7 +651,7 @@ function renderFrame(now) {
     danceFrame(dt);
     renderer.shadowMap.needsUpdate = true;
   }
-  if (idleOn) {
+  if (idleOn && !dance) {
     // Idle animation: breathing, weight shift and head motion; the cast shadow follows.
     for (const figure of [current, transition?.old, transition?.next]) figure?.animate(camera, now / 1000);
     renderer.shadowMap.needsUpdate = true;
@@ -786,12 +857,14 @@ async function playDance(phrase, options = {}) {
     showFigure(figure, false);
     return figure;
   });
+  const order = cycle(figures.length, !!phrase.loop);
+  figures[order[0]].prepareAnimation(); // the first pose moves in the first frame; the rest follow ahead
   showFigure(current, false);
   dance = {
     phrase,
     figures,
     textures: [...textures.values()],
-    order: cycle(figures.length, !!phrase.loop),
+    order,
     time: 0,
     frame: 0,
     step: -1,
@@ -805,6 +878,22 @@ async function playDance(phrase, options = {}) {
   invalidate();
   events.emit('dance', { phase: 'start', ...danceState() });
   return danceState();
+}
+
+// Dance figures use a blendable material whose shader is built the first time one is drawn
+// (~0.7 s, once per session): build it right after the start, not when the first dance begins.
+function warmDanceShader() {
+  if (!current || dance || !studio) return;
+  const figure = new Figure(current.pose, current.texture, studio.scene, overlay, { soft: true });
+  figure.fit(camera);
+  figure.uniforms.uReveal.value = 0; // drawn, fully dissolved: invisible
+  let frames = 0;
+  const off = app.view.onFrame(() => {
+    if (++frames < 2) return;
+    off();
+    figure.dispose();
+  });
+  invalidate();
 }
 
 function stopDance() {
@@ -855,6 +944,11 @@ function danceFrame(dt) {
   // B fades in over A while they overlap, then what is left of A fades out: no see-through.
   const mix = u < 1 ? smooth(0.2, 0.8, clamp(ease(u))) : 1;
   d.frame++;
+  // The poses of the next counts get their skin weights ahead, ~3 ms of it per frame.
+  const deadline = performance.now() + 3;
+  for (let k = 1; k <= 3 && performance.now() < deadline; k++) {
+    d.figures[d.order[(step + k) % d.order.length]].prepareAnimation(deadline);
+  }
   for (const figure of d.figures) {
     if (figure !== a && figure !== b) {
       showFigure(figure, false);
@@ -1002,7 +1096,7 @@ const app = {
       const before = getSizing();
       const after = setSizing(mode);
       if (after !== before) {
-        for (const figure of [current, transition?.old, transition?.next]) {
+        for (const figure of [current, transition?.old, transition?.next, ...spares.values()]) {
           if (figure) figure.placement = null; // refit with the new rule on the next frame
         }
         renderer.shadowMap.needsUpdate = true;
@@ -1264,6 +1358,14 @@ Object.defineProperty(window, '__poseStage', {
 });
 // Diagnostics handle for the browser dev harness / acceptance checks.
 window.__poseStageApp = app;
+// Frame-by-frame acceptance checks (tests/web, dev harness): draw one frame at a chosen time,
+// even where the page gets no animation frames (a hidden pane); returns its CPU time in ms.
+window.__poseStageFrame = (now) => {
+  if (!renderer || !framing) return null;
+  const start = performance.now();
+  renderFrame(now);
+  return performance.now() - start;
+};
 
 start().catch((error) => {
   report(error);
