@@ -89,6 +89,11 @@ def self_check(resources: Path, executable_dir: Path):
             if not (resources / 'web' / name).is_file():
                 raise FileNotFoundError(name)
         report['vendor_files_verified'] = len(manifest['sha256'])
+        for name in ('parts_analyzer.py', 'figure_doc.py'):  # run by the separate analysis runtime
+            if not (resources / name).is_file():
+                raise FileNotFoundError(name)
+        import parts_service
+        report['analyzer'] = parts_service.find_analyzer(executable_dir)
         report['webview2'] = select_runtime(executable_dir / 'WebView2', DATA_DIR)
         if report['webview2']['mode'] is None:
             raise RuntimeError('WebView2 Runtime unavailable (system and portable)')

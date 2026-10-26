@@ -27,6 +27,7 @@ OFFLINE_ARGUMENTS = ("--disable-background-networking --disable-component-update
                      "--proxy-server=http://127.0.0.1:9 --proxy-bypass-list=127.0.0.1;localhost")
 MIME = {".js": "text/javascript", ".json": "application/json", ".png": "image/png",
         ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+FIGURE_LAYER_RE = re.compile(r"([0-9a-f]{16})/([a-z0-9_]{1,32})/(source|parts|uncertain|outline)\.png")
 INLINE_RE = re.compile(r"<(script|style)\b([^>]*)>(.*?)</\1\s*>", re.IGNORECASE | re.DOTALL)
 COMPACT_SIZE = (480, 720)
 LAUNCH = {"runtime": None, "fallback": False}  # WebView2 runtime chosen for this run; relaunch flag
@@ -102,8 +103,9 @@ class LocalServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = False
 
-    def __init__(self, catalog):
+    def __init__(self, catalog, parts=None):
         self.catalog = catalog
+        self.parts = parts  # parts_service.PartsService: layers of open figure projects
         self.web_root = (RESOURCE_DIR / "web").resolve()
         super().__init__(("127.0.0.1", 0), Handler)
 
@@ -138,6 +140,27 @@ class Handler(BaseHTTPRequestHandler):
         elif kind == "backgrounds":
             # Strict `<sha256-16>.(png|jpg)` name, only inside DATA_DIR/backgrounds.
             file = poses.background_file(relative)
+        elif kind == "figures":
+            # `<project id>/<instance>/<layer>.png` of a project open in this window, made in memory.
+            match = FIGURE_LAYER_RE.fullmatch(relative)
+            if match and self.server.parts is not None:
+                try:
+                    data = self.server.parts.layer_png(*match.groups())
+                except Exception:  # noqa: BLE001 — closed project, unknown instance
+                    data = None
+                if data is not None:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    if not head:
+                        try:
+                            self.wfile.write(data)
+                        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                            pass
+                    return
         elif kind == "web":
             # Reject Windows drive/UNC/device paths before resolve() can touch them.
             if (not relative or any(part == ".." for part in relative.split("/"))
@@ -220,6 +243,7 @@ class Api:
         self._compact = False
         self._dances = {"key": None, "status": "idle", "phrases": [], "storyboards": [], "error": None}
         self._dance_lock = threading.Lock()
+        self._parts = None  # parts_service.PartsService (figure markup, docs/PARTS.md)
 
     # --- Poses and state ---
 
@@ -337,6 +361,88 @@ class Api:
         with self._dance_lock:
             if self._dances["key"] == digest:  # not superseded by a newer request
                 self._dances.update(result)
+
+    # --- Figure markup: body parts, hands, fingers (docs/PARTS.md) ---
+
+    def _service(self):
+        if self._parts is None:
+            import parts_service
+            self._parts = parts_service.PartsService(EXE_DIR if getattr(sys, "frozen", False) else None)
+        return self._parts
+
+    def parts_status(self):
+        """Analysis runtime, projects open in this window and recently used ones."""
+        service = self._service()
+        return {"analyzer": service.analyzer_status(), "open": service.list_projects(), "recent": service.recent()}
+
+    def parts_capabilities(self):
+        """Taxonomy (parts with names and colours, joints), commands and display modes."""
+        import figure_doc
+        return figure_doc.read_capabilities()
+
+    def parts_open_pose(self, file):
+        """The project of a library pose (created on first use, seeded with its skeleton)."""
+        self._catalog.require(file)
+        path = self._catalog.resolve(file)
+        if path is None:
+            raise ValueError(f"Файл позы недоступен: {file}")
+        pose = next((p for p in self._catalog.get() if p["file"] == file), {})
+        joints = ((pose.get("joints") or {}).get("points")) or None
+        return self._service().create(path, name=Path(file).stem, joints=joints)
+
+    def parts_open_image(self):
+        """Dialog → a project for any picture (copied into the project folder)."""
+        source = self._pick_background()
+        return self._service().create(source) if source else None
+
+    def parts_open_folder(self):
+        folder = self._pick_folder()
+        return self._service().open_folder(folder) if folder else None
+
+    def parts_open_recent(self, folder):
+        if not any(r["folder"] == folder for r in self._service().recent()):
+            raise ValueError("Неизвестный проект")
+        return self._service().open_folder(folder)
+
+    def parts_summary(self, project_id):
+        return self._service().summary(project_id)
+
+    def parts_call(self, project_id, command, args=None, expected_revision=None):
+        """A figure command or read by the user (figure_doc.COMMANDS / READS). Errors come back
+        as {"error", "code"} so the editor can show them."""
+        import figure_doc
+        if command in ("store_analysis", "export"):
+            raise ValueError(f"Команда {command} недоступна")
+        try:
+            return self._service().call(project_id, command, args or {}, "user", expected_revision)
+        except figure_doc.CommandError as error:
+            return {"error": str(error), "code": error.code}
+
+    def parts_analyze(self, project_id, mode="full"):
+        import figure_doc
+        try:
+            return self._service().analyze(project_id, None, mode, "user")
+        except figure_doc.CommandError as error:
+            return {"error": str(error), "code": error.code}
+
+    def parts_job(self, job_id):
+        return self._service().job(job_id)
+
+    def parts_cancel(self, job_id):
+        return self._service().cancel(job_id)
+
+    def parts_export(self, project_id):
+        """Export into a chosen folder (a new subfolder) or, without a window, the project's exports/."""
+        import figure_doc
+        import time as _time
+        project = self._service().project(project_id)
+        base = self._pick_folder() if self._window else project.folder / "exports"
+        if base is None:
+            return None
+        return figure_doc.export(project, Path(base) / f"{project.doc.get('name') or 'figure'}-{_time.strftime('%Y%m%d-%H%M%S')}")
+
+    def parts_close(self, project_id):
+        return self._service().close(project_id)
 
     # --- Collections ---
 
@@ -595,9 +701,9 @@ def create_app(*, hidden=False, fullscreen=True):
     threading.Thread(target=catalog.scan, name="pose-scan", daemon=True).start()
     threading.Thread(target=lambda: catalog.ready.wait() and poses.prune_thumbs(),  # after the first scan
                      name="thumb-prune", daemon=True).start()
-    server = LocalServer(catalog)
-    threading.Thread(target=server.serve_forever, name="loopback-http", daemon=True).start()
     api = Api(catalog, fullscreen=fullscreen)
+    server = LocalServer(catalog, api._service())
+    threading.Thread(target=server.serve_forever, name="loopback-http", daemon=True).start()
     window = webview.create_window(
         "PoseStage", f"http://127.0.0.1:{server.server_port}{catalog.prefix}/web/index.html",
         js_api=api, fullscreen=fullscreen, hidden=hidden, frameless=True, background_color="#16181b",
@@ -606,6 +712,13 @@ def create_app(*, hidden=False, fullscreen=True):
     )
     api._window = window
     logging.getLogger("pywebview").addHandler(RuntimeFailureWatch(window))
+
+    def parts_changed(change):
+        """Agent or analysis changes reach the editor (it re-reads the document)."""
+        if window.events.loaded.is_set():
+            script = f"window.__partsChanged && window.__partsChanged({json.dumps(change, ensure_ascii=False, default=str)})"
+            threading.Thread(target=lambda: window.evaluate_js(script), daemon=True).start()
+    api._service().on_change = parts_changed
     origin = f"http://127.0.0.1:{server.server_port}"
 
     def configure_native():
@@ -692,6 +805,12 @@ def main():
     import webview
     # Keep the WebView profile/cache out of the source directory and image folder.
     window, api, server = create_app()
+    stop_bridge = None
+    try:  # local AI agents: the same figure commands (agent_bridge.py, tools/posestage_mcp.py)
+        import agent_bridge
+        stop_bridge = agent_bridge.start(api._service(), DATA_DIR)
+    except Exception:  # noqa: BLE001 — the window works without it
+        logging.exception("Cannot start the agent bridge")
     try:
         webview.start(gui="edgechromium", debug=False, private_mode=False,
                       storage_path=str(DATA_DIR / "webview"))
@@ -706,6 +825,9 @@ def main():
     finally:
         server.shutdown()
         server.server_close()
+        if stop_bridge:
+            stop_bridge()
+        api._service().close_all()
     if LAUNCH["fallback"]:
         relaunch_portable()
     return 0

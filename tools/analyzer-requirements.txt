@@ -1,0 +1,8 @@
+# The analysis runtime (parts_analyzer.py), separate from PoseStage.exe: Python 3.9–3.12, 64-bit.
+# Installed by tools/setup_analyzer.py; versions are the ones the benchmark in docs/PARTS.md ran with.
+mediapipe==0.10.14
+numpy==1.26.4
+scipy==1.17.1
+pillow==13.0.0
+opencv-contrib-python==4.11.0.86
+protobuf==4.25.9

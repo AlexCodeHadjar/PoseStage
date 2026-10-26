@@ -22,6 +22,7 @@ const UI_MODULES = [
   ['navigator', './ui/navigator.js'],
   ['skeleton', './ui/skeleton.js'],
   ['dance', './ui/dance.js'],
+  ['parts', './ui/parts.js'],
 ];
 
 const canvas = document.querySelector('#stage');

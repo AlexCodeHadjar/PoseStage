@@ -1,0 +1,29 @@
+{
+  "about": "Fixed benchmark of the body / hand / finger analysis (docs/PARTS.md). Images are files of the user's own pose collection (relative paths); 'derive' makes a test image from one: crop = the upper part of the figure (a cut-off figure), small = scaled so the hand is a few dozen px. Tune = for choosing parameters, validate = report only.",
+  "images": [
+    {"id": "t01", "split": "tune", "category": "front", "file": "03ba24259bf8424a87d1bf5c8b29ee24__pose-01.png"},
+    {"id": "t02", "split": "tune", "category": "side", "file": "737bdd08325b879b7b33184a13d882d5__pose-02.png"},
+    {"id": "t03", "split": "tune", "category": "back", "file": "photo-000001__pose-06.png"},
+    {"id": "t04", "split": "tune", "category": "three_quarter", "file": "3e0253656551d6cb57fec2814ac1f76e__pose-03.png"},
+    {"id": "t05", "split": "tune", "category": "crossed_arms", "file": "0de293dc994df547b2dd5a6706216fa3__pose-01.png"},
+    {"id": "t06", "split": "tune", "category": "hand_at_face", "file": "03aff84da32ceabc32bbbb0584960b1d__pose-01.png"},
+    {"id": "t07", "split": "tune", "category": "sitting", "file": "photo-000002__pose-02.png"},
+    {"id": "t08", "split": "tune", "category": "lying", "file": "photo-000008__pose-02.png"},
+    {"id": "t09", "split": "tune", "category": "open_hand", "file": "dance-20261024/poses/dance_02_BTS_PERMISSION_TO_DANCE__010__04.500s__pose-01.png"},
+    {"id": "t10", "split": "tune", "category": "fist", "file": "dance-20261024/poses/dance_01_JISOO_FLOWER__012__05.500s__pose-01.png"},
+    {"id": "t11", "split": "tune", "category": "photo", "file": "Shots_dance/04_TWICE_TT/frames_1024/005__02.000s.png"},
+    {"id": "t12", "split": "tune", "category": "cropped", "file": "03ba24259bf8424a87d1bf5c8b29ee24__pose-01.png", "derive": "crop"},
+    {"id": "v01", "split": "validate", "category": "front", "file": "photo-000003__pose-06.png"},
+    {"id": "v02", "split": "validate", "category": "side", "file": "065076598448aaab28921debb5cb086d__pose-04.png"},
+    {"id": "v03", "split": "validate", "category": "three_quarter", "file": "5b56b4722c7f26cf1390129c8a76f9cf__pose-03.png"},
+    {"id": "v04", "split": "validate", "category": "crossed_arms", "file": "1293df26a70e1e9b852826123e0d613f__pose-01.png"},
+    {"id": "v05", "split": "validate", "category": "hand_at_face", "file": "3e0253656551d6cb57fec2814ac1f76e__pose-01.png"},
+    {"id": "v06", "split": "validate", "category": "sitting", "file": "photo-000002__pose-05.png"},
+    {"id": "v07", "split": "validate", "category": "lying", "file": "photo-000008__pose-04.png"},
+    {"id": "v08", "split": "validate", "category": "open_hand", "file": "dance-20261024/poses/dance_02_BTS_PERMISSION_TO_DANCE__006__02.500s__pose-01.png"},
+    {"id": "v09", "split": "validate", "category": "fist", "file": "dance-20261024/poses/dance_01_JISOO_FLOWER__016__07.500s__pose-01.png"},
+    {"id": "v10", "split": "validate", "category": "hand_at_neck", "file": "dance-20261024/poses/dance_03_FIFTY_FIFTY_CUPID__011__05.000s__pose-01.png"},
+    {"id": "v11", "split": "validate", "category": "several_figures", "file": "Shots_dance/02_BTS_PERMISSION_TO_DANCE/storyboard.jpg"},
+    {"id": "v12", "split": "validate", "category": "small", "file": "photo-000003__pose-06.png", "derive": "small"}
+  ]
+}

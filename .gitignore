@@ -24,3 +24,6 @@ state.json
 config.json
 .DS_Store
 Thumbs.db
+
+# Frontend dev snapshot (tools/dev_server.py)
+.devdata/

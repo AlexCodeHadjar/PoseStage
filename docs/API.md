@@ -97,6 +97,27 @@ type Dance = {
   от 2 до 16 поз, только файлы текущей коллекции; иначе `ValueError`. Новый `id` выдаёт бэкенд.
 - `delete_sequence(id) -> bool`.
 
+### Разметка частей тела (docs/PARTS.md)
+
+Проекты фигур открывает `parts_service.PartsService`; документ и команды — `figure_doc.py`.
+Ошибки команд приходят значением `{error, code}` (коды `invalid`, `conflict`, `locked`, `unbounded`,
+`no_proposal`, `empty`, `not_found`, `source`, `busy`, `unavailable` …), а не исключением.
+
+- `parts_capabilities()` — таксономия: части `{id: {value, parent, name, color}}`, суставы, команды,
+  режимы показа, `not_yet`.
+- `parts_status() -> {analyzer: {available, source, reason}, open: Project[], recent: [{id, name, folder}]}`.
+- `parts_open_pose(file)` — проект позы библиотеки (создаётся при первом открытии в
+  `%APPDATA%\PoseStage\figures\<sha256[:16]>`; её скелет — начальные суставы, `source.kind = "estimated"`).
+  `parts_open_image()` / `parts_open_folder()` — диалог; `parts_open_recent(folder)`. Все возвращают
+  сводку `get_document_summary` + `job` + `analyzer`.
+- `parts_call(project_id, command, args, expected_revision?)` — команда или чтение `figure_doc`
+  от пользователя (`store_analysis` и `export` запрещены).
+- `parts_analyze(project_id, mode: "full"|"masks") -> Job`, `parts_job(job_id)`, `parts_cancel(job_id)`;
+  `Job = {job_id, status: "queued"|"running"|"done"|"error"|"cancelled", progress, stage, error, result}`.
+- `parts_export(project_id)` — диалог папки → экспорт; `parts_summary(project_id)`; `parts_close(project_id)`.
+- Бэкенд сообщает об изменениях (ход анализа, правки агента) вызовом
+  `window.__partsChanged({project_id, revision, command, source} | {project_id, job})`.
+
 ### Коллекции (несколько папок)
 
 ```ts
@@ -160,7 +181,13 @@ pywebview (`new Function`), хэш importmap считается из `index.html
 
 Сервер обслуживает только `127.0.0.1`, префикс случайный:
 `/web/...`, `/poses/<file>` (только из allowlist каталога), `/thumbs/<file>`
-(миниатюры, кэш в `%APPDATA%\PoseStage\thumbs`). Папку поз программа не изменяет.
+(миниатюры, кэш в `%APPDATA%\PoseStage\thumbs`),
+`/figures/<project id>/<instance>/(source|parts|uncertain|outline).png` — слои открытого проекта
+разметки, создаются в памяти. Папку поз программа не изменяет.
+
+Мост ИИ-агента (`agent_bridge.py`) — отдельный сервер `127.0.0.1:<порт>`: `POST /v1/call {tool, args}`
+с `Authorization: Bearer <token>`; порт и токен — в `%APPDATA%\PoseStage\agent_bridge.json`, пока
+программа запущена. Запросы с заголовком `Origin` (браузерные страницы) отвергаются.
 
 ## 2. Ядро фронтенда → UI-модули
 
@@ -253,6 +280,7 @@ type App = {
 | M | масштаб поз: как в файле (по умолчанию) ↔ единый размер тела (`view.setSizing`) | художник |
 | Y | оживление позы (`view.setIdle`) | художник |
 | J | правка скелета (`set_joints`) | скелет |
+| U | разметка частей тела; внутри: 1–5 режимы, V B E N G J X R инструменты, [ ] кисть, Ctrl+Z / Ctrl+Y | разметка |
 | K, пробел, «,» «.» | танцы: список связок; во время танца — пауза, темп; Esc — стоп | танцы |
 | G | галерея миниатюр | навигация |
 | S | избранное | навигация |

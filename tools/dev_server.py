@@ -83,15 +83,20 @@ class DevHandler(app.Handler):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--folder", type=Path, default=None)
+    parser.add_argument("--bridge", action="store_true", help="start the agent bridge (agent_bridge.py)")
     options = parser.parse_args()
     app.setup_logging()
     # Like the app run from source: saved collections only, no EXE-folder fallback.
     folder, recursive = (options.folder.resolve(), True) if options.folder else poses.find_source(None)
     catalog = poses.PoseCatalog(folder, "/dev", recursive=recursive)
     threading.Thread(target=catalog.scan, daemon=True).start()
-    server = app.LocalServer(catalog)
+    api = app.Api(catalog, fullscreen=False)
+    server = app.LocalServer(catalog, api._service())
     server.RequestHandlerClass = DevHandler
-    server.api = app.Api(catalog, fullscreen=False)
+    server.api = api
+    if options.bridge:  # the agent bridge too, for trying the MCP adapter against the dev page
+        import agent_bridge
+        agent_bridge.start(api._service(), poses.DATA_DIR)
     print(f"http://127.0.0.1:{server.server_port}/dev/web/index.html", flush=True)
     server.serve_forever()
 
